@@ -49,7 +49,7 @@ q_model, q_processor = setup_model(MODEL_NAME)
 inspection_image_id = 0
 os.makedirs("inspection_images", exist_ok=True)
 failed_dataset_list = []
-finished_parquet_list = ['first', 'second']
+finished_parquet_list = []
 
 
 ### --- process parquet --- ###
