@@ -3,7 +3,7 @@ python lerobot_explorer.py \
     --dataset-path /pdata/oxe_lerobot/austin_buds_dataset_converted_externally_to_rlds
 
 python lerobot_explorer.py \
-    --parquet-file /pdata/oxe_lerobot_g/dlr_sara_pour_converted_externally_to_rlds/data/chunk-000/episode_000000.parquet
+    --parquet-file /pdata/oxe_lerobot/austin_buds_dataset_converted_externally_to_rlds/data/chunk-000/episode_000013.parquet
 """
 
 import os
@@ -157,13 +157,13 @@ def explore_parquet_file(parquet_path_str: str, output_base_dir: Path):
 
         logging.info(f"\n  --- Record {i} in {parquet_path.name} ---")
 
-        # 2. Print 'bbox_index'
-        if 'bbox_index' in record and record['bbox_index'] is not None:
-            logging.info(f"    bbox_index: {record['bbox_index']}")
-        elif 'bbox_index' in features:
-            logging.info(f"    bbox_index: (present but None/empty)")
+        # 2. Print 'bbox'
+        if 'bbox' in record and record['bbox'] is not None:
+            logging.info(f"    bbox: {record['bbox']}")
+        elif 'bbox' in features:
+            logging.info(f"    bbox: (present but None/empty)")
         else:
-            logging.info(f"    bbox_index: (column not found in this record/features)")
+            logging.info(f"    bbox: (column not found in this record/features)")
 
         # 3. Save images
         if image_columns_info:

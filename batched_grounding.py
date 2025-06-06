@@ -2,12 +2,12 @@
 CUDA_VISIBLE_DEVICES=4 TOKENIZERS_PARALLELISM=true python batched_grounding.py \
     --dataset-path /pdata/oxe_lerobot/dlr_sara_pour_converted_externally_to_rlds \
     --output-home /pdata/oxe_lerobot_g \
-    --batch_size 24 > o.txt
+    --batch_size 24
 
-CUDA_VISIBLE_DEVICES=4 TOKENIZERS_PARALLELISM=true python batched_grounding.py \
+CUDA_VISIBLE_DEVICES=4 TOKENIZERS_PARALLELISM=false python batched_grounding.py \
     --dataset-home /pdata/oxe_lerobot \
     --inplace 1 \
-    --batch-size 24 > o.txt
+    --batch-size 1024
 """
 
 import os, sys, io, signal, time
@@ -23,7 +23,7 @@ from PIL import Image
 from tqdm import tqdm
 from datasets import load_dataset, Dataset, Value
 from datasets.features.image import Image as ImageHF
-from qwen_grounding_utils_v2 import setup_model, grounding_pipeline_batched
+from qwen_grounding_utils_v3 import setup_model, grounding_pipeline_batched
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 # set DEBUG=1 to enable debug logs
@@ -46,7 +46,7 @@ BATCH_SIZE = 8
 
 
 ### --- global varibles --- ###
-from qwen_grounding_utils_v2 import load_list_from_jsonl, save_list_to_jsonl
+from qwen_grounding_utils_v3 import load_list_from_jsonl, save_list_to_jsonl
 
 finished_parquet_list = load_list_from_jsonl("finished_parquets.jsonl")
 finished_parquet_list = [item["path"] for item in finished_parquet_list]
@@ -108,7 +108,7 @@ def load_parquet(dataset_path):
     logging.info(f"Found {len(parquet_paths)} parquet files in {dataset_path}.")
     return parquet_paths
 
-def process_parquet(parquet_paths, tasks=None, bboxes_json_path:Path=None):
+def process_parquet(parquet_paths, tasks=None, bboxes_json_path:Path=None, dataset_tag=""):
     global finished_parquet_list
     global failed_dataset_list
 
@@ -140,7 +140,8 @@ def process_parquet(parquet_paths, tasks=None, bboxes_json_path:Path=None):
             return False
         
         image_columns_info = [] # List of (col_name, col_type_enum_or_class)
-        suspected_image_columns = [col for col in features if col.startswith("observation.images.cam")]
+        # suspected_image_columns = [col for col in features if col.startswith("observation.images.cam")]
+        suspected_image_columns = [col for col in features if col == "observation.images.cam"]
         for col in suspected_image_columns:
             if isinstance(features[col], ImageHF):
                 image_columns_info.append((col, ImageHF))
@@ -208,6 +209,10 @@ def process_parquet(parquet_paths, tasks=None, bboxes_json_path:Path=None):
                         continue
                     
                     current_batch_images.append(pil_image)
+                    # ###
+                    # # debug: save img to inspection_images/debug/
+                    # pil_image.save(f"inspection_images/debug/{r_idx}_{image_col_name}_o.jpg")
+                    # ###
                     current_batch_task_descs.append(task_str if final_use_task_for_record else None)
                     current_batch_metadata.append({
                         "original_record_idx": r_idx, # Index within the current parquet file's episode
@@ -225,7 +230,7 @@ def process_parquet(parquet_paths, tasks=None, bboxes_json_path:Path=None):
                 if len(current_batch_images) >= BATCH_SIZE:
                     # Process the current batch
                     logging.debug(f"Processing batch of size {len(current_batch_images)}")
-                    batched_json_responses, batched_output_images = grounding_pipeline_batched(
+                    batched_json_responses, _ = grounding_pipeline_batched(
                         images=current_batch_images,
                         model=q_model,
                         processor=q_processor,
@@ -235,18 +240,17 @@ def process_parquet(parquet_paths, tasks=None, bboxes_json_path:Path=None):
                     )
 
                     # Distribute results back to records
-                    for i in range(len(batched_output_images)):
+                    for i in range(len(batched_json_responses)):
                         meta = current_batch_metadata[i]
                         record_to_update = temp_episode_records[meta["original_record_idx"]]
-                        
-                        output_image = batched_output_images[i]
+                        # output_image = batched_output_images[i]
                         json_response = batched_json_responses[i]
 
                         if SAVE_INSPECTION_IMAGE and (random.random() < RANDOM_SAMPLE_RATE):
                             global inspection_image_id
                             inspection_image_id += 1
-                            parquet_info_str = str(parquet_path).replace('/', '-').replace('\\', '-').replace('.', '-')
-                            output_image.save(f"inspection_images/{inspection_image_id}_{parquet_info_str}_{meta['image_col_name']}.jpg")
+                            parquet_info_str = (f"{dataset_tag}_{meta['image_col_name'][-1]}").replace('/', '-').replace('\\', '-').replace('.', '-')
+                            # output_image.save(f"inspection_images/{inspection_image_id}_{parquet_info_str}.jpg")
                             save_json_infos = {
                                 'parquet_path': str(parquet_path),
                                 'record_idx': meta["original_record_idx"],
@@ -254,33 +258,26 @@ def process_parquet(parquet_paths, tasks=None, bboxes_json_path:Path=None):
                                 'task_desc': meta['task_str_used'], # Use the actual task string passed
                                 'json_response': json_response
                             }
-                            with open(f"inspection_images/{inspection_image_id}_{parquet_info_str}_{meta['image_col_name']}.json", 'w') as json_file:
+                            with open(f"inspection_images/{inspection_image_id}_{parquet_info_str}.json", 'w') as json_file:
                                 json.dump(save_json_infos, json_file, ensure_ascii=False, indent=4)
 
-                        # Update record with processed image
-                        if meta["image_col_type"] == ImageHF:
-                            record_to_update[meta["image_col_name"]] = output_image
-                        elif meta["image_col_type"] == dict:
-                            buffer = io.BytesIO()
-                            # Ensure PNG for transparency if any, or JPG for smaller size.
-                            # Using original format if available, else PNG.
-                            img_format = output_image.format or "PNG"
-                            output_image.save(buffer, format=img_format)
-                            record_to_update[meta["image_col_name"]]['bytes'] = buffer.getvalue()
+                        # if meta["image_col_type"] == ImageHF:
+                        #     record_to_update[f"{meta['image_col_name']}_g"] = output_image
+                        # elif meta["image_col_type"] == dict:
+                        #     buffer = io.BytesIO()
+                        #     img_format = output_image.format or "PNG"
+                        #     output_image.save(buffer, format=img_format)
+                        #     record_to_update[f"{meta['image_col_name']}_g"] = record_to_update[meta["image_col_name"]].copy()
+                        #     record_to_update[f"{meta['image_col_name']}_g"]['bytes'] = buffer.getvalue()
 
-                        # Add bbox_index (one per record, assumes first image's bbox is representative or needs merging)
-                        # This part needs careful thought if a record has multiple images and you want distinct bboxes
-                        # For now, let's assume we store the bbox from the *first* processed image of a record,
-                        # or if you expect one bbox JSON per image, then bbox_index should be per image, not per record.
-                        # The current structure `record['bbox_index']` implies one bbox_index per record.
-                        # If we take the bbox of the first image_column for that record:
                         if 'bbox_index' not in record_to_update: # Only add once per record
                             bbox_idx = len(all_episode_bboxes_data)
                             all_episode_bboxes_data.append({
                                 'bbox_index': bbox_idx,
                                 'bbox': json_response # This is the json_response for *this specific image*
                             })
-                            record_to_update['bbox_index'] = bbox_idx
+                            # record_to_update['bbox_index'] = bbox_idx
+                            record_to_update['bbox'] = json.dumps(json_response, ensure_ascii=False)
                     
                     # Clear batches
                     current_batch_images = []
@@ -290,49 +287,56 @@ def process_parquet(parquet_paths, tasks=None, bboxes_json_path:Path=None):
         # Process any remaining images in the last batch
         if current_batch_images:
             logging.debug(f"Processing final batch of size {len(current_batch_images)}")
-            batched_json_responses, batched_output_images = grounding_pipeline_batched(
+            batched_json_responses, _ = grounding_pipeline_batched(
                 images=current_batch_images, model=q_model, processor=q_processor,
                 task_descs=current_batch_task_descs, SHOW_OBJECT_NAME=SHOW_OBJECT_NAME,
                 USE_SUBTASK_CONDITIONING=USE_SUBTASK_CONDITIONING # Handled by task_descs
             )
-            for i in range(len(batched_output_images)): # Same logic as above
+            for i in range(len(batched_json_responses)): # Same logic as above
                 meta = current_batch_metadata[i]
                 record_to_update = temp_episode_records[meta["original_record_idx"]]
-                output_image = batched_output_images[i]
+                # output_image = batched_output_images[i]
                 json_response = batched_json_responses[i]
 
                 if SAVE_INSPECTION_IMAGE and (random.random() < RANDOM_SAMPLE_RATE):
                     inspection_image_id += 1
-                    parquet_info_str = str(parquet_path).replace('/', '-').replace('\\', '-').replace('.', '-')
-                    output_image.save(f"inspection_images/{inspection_image_id}_{parquet_info_str}_{meta['image_col_name']}.jpg")
+                    parquet_info_str = (f"{dataset_tag}_{meta['image_col_name'][-1]}").replace('/', '-').replace('\\', '-').replace('.', '-')
+                    # output_image.save(f"inspection_images/{inspection_image_id}_{parquet_info_str}.jpg")
                     save_json_infos = {
                         'parquet_path': str(parquet_path), 'record_idx': meta["original_record_idx"],
                         'image_col_name': meta['image_col_name'], 'task_desc': meta['task_str_used'],
                         'json_response': json_response
                     }
-                    with open(f"inspection_images/{inspection_image_id}_{parquet_info_str}_{meta['image_col_name']}.json", 'w') as json_file:
+                    with open(f"inspection_images/{inspection_image_id}_{parquet_info_str}.json", 'w') as json_file:
                         json.dump(save_json_infos, json_file, ensure_ascii=False, indent=4)
 
-                if meta["image_col_type"] == ImageHF:
-                    record_to_update[meta["image_col_name"]] = output_image
-                elif meta["image_col_type"] == dict:
-                    buffer = io.BytesIO()
-                    img_format = output_image.format or "PNG"
-                    output_image.save(buffer, format=img_format)
-                    record_to_update[meta["image_col_name"]]['bytes'] = buffer.getvalue()
+                # if meta["image_col_type"] == ImageHF:
+                #     record_to_update[f"{meta['image_col_name']}_g"] = output_image
+                # elif meta["image_col_type"] == dict:
+                #     buffer = io.BytesIO()
+                #     img_format = output_image.format or "PNG"
+                #     output_image.save(buffer, format=img_format)
+                #     record_to_update[f"{meta['image_col_name']}_g"] = record_to_update[meta["image_col_name"]].copy() # Copy original dict structure
+                #     record_to_update[f"{meta['image_col_name']}_g"]['bytes'] = buffer.getvalue()
                 
                 if 'bbox_index' not in record_to_update:
                     bbox_idx = len(all_episode_bboxes_data)
                     all_episode_bboxes_data.append({'bbox_index': bbox_idx, 'bbox': json_response})
-                    record_to_update['bbox_index'] = bbox_idx
+                    # record_to_update['bbox_index'] = bbox_idx
+                    record_to_update['bbox'] = json.dumps(json_response, ensure_ascii=False)
         
         # All records for this file have been (potentially) updated in temp_episode_records
         processed_records_for_this_file = temp_episode_records
 
         # Save updated parquet
         new_features = features.copy()
-        if 'bbox_index' not in new_features: # Add if not already there from a previous run
-            new_features['bbox_index'] = Value('int64')
+        # if 'bbox_index' not in new_features: # Add if not already there from a previous run
+        #     new_features['bbox_index'] = Value('int64')
+        if 'bbox' not in new_features:
+            new_features['bbox'] = Value("string")
+        # for image_col_name, image_col_type in image_columns_info:
+        #     if f"{image_col_name}_g" not in new_features:
+        #         new_features[f"{image_col_name}_g"] = features[image_col_name] # Keep the original type
         
         if processed_records_for_this_file:
             updated_dataset = Dataset.from_list(processed_records_for_this_file, features=new_features)
@@ -344,8 +348,9 @@ def process_parquet(parquet_paths, tasks=None, bboxes_json_path:Path=None):
         try:
             updated_dataset.to_parquet(str(parquet_path))
             save_list_to_jsonl(all_episode_bboxes_data, str(bboxes_json_path))
+            save_finish_list_to_json()
             # logging.info(f"Successfully processed and saved {parquet_path}")
-            print(f"Successfully processed and saved {parquet_path}.\nUpdated {bboxes_json_path} with {len(all_episode_bboxes_data)} items.")
+            # print(f"Successfully processed and saved {parquet_path}.\nUpdated {bboxes_json_path} with {len(all_episode_bboxes_data)} items.")
             finished_parquet_list.append(str(parquet_path))
         except Exception as e:
             logging.error(f"Error saving updated dataset to {parquet_path}: {e}")
@@ -386,13 +391,14 @@ def process_dataset(dataset_path: str):
     finished = process_parquet(
         load_parquet(output_dataset_path), 
         tasks=tasks, 
-        bboxes_json_path=output_dataset_path / "meta" / "bboxes.jsonl"
+        bboxes_json_path=output_dataset_path / "meta" / "bboxes.jsonl",
+        dataset_tag=output_dataset_path.name[:6]
     )
     if not finished:
         logging.error(f"Failed to process dataset {dataset_path}. Please check the logs for details.")
         return
 
-    print(f"Processed dataset {dataset_path} successfully. Bboxes saved to {bboxes_json_path}.")
+    logging.info(f"Processed dataset {dataset_path} successfully.")
 
 
 def main(args):

@@ -1,0 +1,10 @@
+name: vllm
+channels:
+  - defaults
+  - conda-forge
+  - pytorch
+  - nvidia
+dependencies:
+  - python=3.9
+  - pytorch-cuda=12.1
+  - pip
