@@ -4,8 +4,13 @@ CUDA_VISIBLE_DEVICES=4 TOKENIZERS_PARALLELISM=true python batched_grounding.py \
     --output-home /pdata/oxe_lerobot_g \
     --batch_size 24
 
-CUDA_VISIBLE_DEVICES=4 TOKENIZERS_PARALLELISM=false python batched_grounding.py \
+CUDA_VISIBLE_DEVICES=2 TOKENIZERS_PARALLELISM=false python batched_grounding.py \
     --dataset-home /pdata/oxe_lerobot \
+    --inplace 1 \
+    --batch-size 1024
+
+CUDA_VISIBLE_DEVICES=2 TOKENIZERS_PARALLELISM=false python batched_grounding.py \
+    --dataset-path /pdata/oxe_lerobot/ \
     --inplace 1 \
     --batch-size 1024
 """
@@ -58,16 +63,16 @@ def save_finish_list_to_json():
             finished_parquets.append({"path": item})
     save_list_to_jsonl(finished_parquets, "finished_parquets.jsonl")
 
-failed_dataset_list = load_list_from_jsonl("failed_datasets.jsonl")
-def save_fail_list_to_json():
-    global failed_dataset_list
-    logging.info(f"There are {len(failed_dataset_list)} datasets failed to process. The paths and features will be saved to './failed_datasets.jsonl'.")
-    save_list_to_jsonl(failed_dataset_list, "failed_datasets.jsonl")
+# failed_dataset_list = load_list_from_jsonl("failed_datasets.jsonl")
+# def save_fail_list_to_json():
+#     global failed_dataset_list
+#     logging.info(f"There are {len(failed_dataset_list)} datasets failed to process. The paths and features will be saved to './failed_datasets.jsonl'.")
+#     save_list_to_jsonl(failed_dataset_list, "failed_datasets.jsonl")
 
 def handle_sigint(signum, frame):
     logging.info("Caught Ctrl+C, saving list before exit...")
     save_finish_list_to_json()
-    save_fail_list_to_json()
+    # save_fail_list_to_json()
     sys.exit(0)
 
 inspection_image_id = 0
@@ -110,7 +115,7 @@ def load_parquet(dataset_path):
 
 def process_parquet(parquet_paths, tasks=None, bboxes_json_path:Path=None, dataset_tag=""):
     global finished_parquet_list
-    global failed_dataset_list
+    # global failed_dataset_list
 
     # To store {'bbox_index': X, 'bbox': Y} for the entire dataset
     if bboxes_json_path and bboxes_json_path.exists():
@@ -136,8 +141,14 @@ def process_parquet(parquet_paths, tasks=None, bboxes_json_path:Path=None, datas
             logging.debug(f"Loaded dataset from {parquet_path} with {len(episode)} records.")
         except Exception as e:
             logging.error(f"Error loading {parquet_path}: {e}")
-            failed_dataset_list.append({"path": str(parquet_path), "reason": f"Load error: {e}", "features": None})
+            # failed_dataset_list.append({"path": str(parquet_path), "reason": f"Load error: {e}", "features": None})
             return False
+
+        ### only deal with key frames ###
+        if 'sub_task_index' not in features:
+            # logging.info(f"Skipped {parquet_path} because it does not have 'sub_task_index' column.")
+            continue
+
         
         image_columns_info = [] # List of (col_name, col_type_enum_or_class)
         # suspected_image_columns = [col for col in features if col.startswith("observation.images.cam")]
@@ -152,7 +163,7 @@ def process_parquet(parquet_paths, tasks=None, bboxes_json_path:Path=None, datas
 
         if not image_columns_info:
             logging.error(f"No recognized image columns found in {parquet_path}. Skipping.")
-            failed_dataset_list.append({"path": str(parquet_path), "reason": "No image columns", "features": features})
+            # failed_dataset_list.append({"path": str(parquet_path), "reason": "No image columns", "features": features})
             return False
 
         processed_records_for_this_file = []
@@ -165,6 +176,11 @@ def process_parquet(parquet_paths, tasks=None, bboxes_json_path:Path=None, datas
         temp_episode_records = list(episode) # Convert to list for easier indexing if needed later
 
         for r_idx, record in tqdm(enumerate(temp_episode_records), desc=f" Records", total=len(temp_episode_records), leave=False):
+            ### only deal with key frames ###
+            ### which means sub_task_index != -1 ###
+            if record.get('sub_task_index', -1) == -1:
+                continue
+
             r_task_index = record.get('task_index', None)
             task_str = None
             
@@ -342,7 +358,7 @@ def process_parquet(parquet_paths, tasks=None, bboxes_json_path:Path=None, datas
             updated_dataset = Dataset.from_list(processed_records_for_this_file, features=new_features)
         else:
             logging.error(f"No records processed for {parquet_path}, creating empty dataset with new features.")
-            failed_dataset_list.append({"path": str(parquet_path), "reason": f"Process error: 'processed_records_for_this_file' is empty", "features": new_features})
+            # failed_dataset_list.append({"path": str(parquet_path), "reason": f"Process error: 'processed_records_for_this_file' is empty", "features": new_features})
             return False
         
         try:
@@ -354,7 +370,7 @@ def process_parquet(parquet_paths, tasks=None, bboxes_json_path:Path=None, datas
             finished_parquet_list.append(str(parquet_path))
         except Exception as e:
             logging.error(f"Error saving updated dataset to {parquet_path}: {e}")
-            failed_dataset_list.append({"path": str(parquet_path), "reason": f"Save error: {e}", "features": new_features})
+            # failed_dataset_list.append({"path": str(parquet_path), "reason": f"Save error: {e}", "features": new_features})
             return False
 
 
@@ -461,7 +477,7 @@ if __name__ == "__main__":
         logging.warning("Output home directory is not specified. Will overwrite the original dataset.")
     
     atexit.register(save_finish_list_to_json)
-    atexit.register(save_fail_list_to_json)
+    # atexit.register(save_fail_list_to_json)
     signal.signal(signal.SIGINT, handle_sigint)
     
     if args.batch_size:
