@@ -8,11 +8,6 @@ CUDA_VISIBLE_DEVICES=2 TOKENIZERS_PARALLELISM=false python batched_grounding.py 
     --dataset-home /pdata/oxe_lerobot \
     --inplace 1 \
     --batch-size 1024
-
-CUDA_VISIBLE_DEVICES=2 TOKENIZERS_PARALLELISM=false python batched_grounding.py \
-    --dataset-path /pdata/oxe_lerobot/ \
-    --inplace 1 \
-    --batch-size 1024
 """
 
 import os, sys, io, signal, time
@@ -113,269 +108,298 @@ def load_parquet(dataset_path):
     logging.info(f"Found {len(parquet_paths)} parquet files in {dataset_path}.")
     return parquet_paths
 
-def process_parquet(parquet_paths, tasks=None, bboxes_json_path:Path=None, dataset_tag=""):
+def _save_and_clear_file_from_memory(
+    path_str,
+    in_memory_data,
+    original_features_map
+):
+    """
+    Saves a single, fully processed Parquet file to disk and removes its data
+    from memory to improve efficiency.
+    """
+    global finished_parquet_list
+    logging.info(f"All images for {path_str} processed. Saving and clearing from memory.")
+    
+    updated_records = in_memory_data.get(path_str)
+    if not updated_records:
+        logging.warning(f"Attempted to save {path_str}, but no records found in memory. Skipping.")
+        return
+
+    try:
+        original_features = original_features_map[path_str]
+        new_features = original_features.copy()
+        
+        if 'bbox' not in new_features:
+            new_features['bbox'] = Value("string")
+        
+        updated_dataset = Dataset.from_list(updated_records, features=new_features)
+        updated_dataset.to_parquet(path_str)
+        
+        # Mark as finished ONLY after successful save
+        finished_parquet_list.append(path_str)
+        logging.info(f"Successfully saved {path_str}")
+
+    except Exception as e:
+        logging.error(f"Error saving updated dataset to {path_str}: {e}. It will remain in memory for final save attempt.")
+        # We DON'T remove it from memory if save fails, allowing a final attempt later.
+        return
+
+    # --- Cleanup ---
+    # If save was successful, remove data from all tracking dictionaries.
+    del in_memory_data[path_str]
+    del original_features_map[path_str]
+
+def _process_and_apply_batch(
+    images,
+    metadata,
+    task_descs,
+    in_memory_data,
+    all_episode_bboxes_data,
+    original_features_map,
+    *, # Keyword-only arguments below
+    model,
+    processor,
+    dataset_tag,
+    show_object_name,
+    use_subtask_conditioning
+):
+    """
+    Helper function to process a batch of images and apply the results.
+    This function modifies `in_memory_data` and `all_episode_bboxes_data` in place.
+    """
+    global inspection_image_id
+    logging.debug(f"Processing batch of size {len(images)}")
+
+    batched_json_responses, _ = grounding_pipeline_batched(
+        images=images,
+        model=model,
+        processor=processor,
+        task_descs=task_descs,
+        SHOW_OBJECT_NAME=show_object_name,
+        USE_SUBTASK_CONDITIONING=use_subtask_conditioning
+    )
+
+    # Distribute results back to the correct records in memory
+    prevpath = None
+    for i in range(len(batched_json_responses)):
+        meta = metadata[i]
+        path = meta["original_parquet_path"]
+        r_idx = meta["original_record_idx"]
+        json_response = batched_json_responses[i]
+
+        if prevpath is not None and prevpath != path:
+            # Save and clear the previous file from memory
+            _save_and_clear_file_from_memory(
+                prevpath,
+                in_memory_data,
+                original_features_map
+            )
+            save_finish_list_to_json()
+        prevpath = path
+
+        # Get the specific record from our in-memory store
+        record_to_update = in_memory_data[path][r_idx]
+
+        # --- Save inspection image logic (unchanged) ---
+        if SAVE_INSPECTION_IMAGE and (random.random() < RANDOM_SAMPLE_RATE):
+            inspection_image_id += 1
+            parquet_info_str = f"{dataset_tag}_{Path(path).stem}_{meta['image_col_name'][-1]}".replace('/', '-').replace('\\', '-')
+            save_json_infos = {
+                'parquet_path': path,
+                'record_idx': r_idx,
+                'image_col_name': meta['image_col_name'],
+                'task_desc': meta['task_str_used'],
+                'json_response': json_response
+            }
+            with open(f"inspection_images/{inspection_image_id}_{parquet_info_str}.json", 'w') as json_file:
+                json.dump(save_json_infos, json_file, ensure_ascii=False, indent=4)
+
+        # --- Update the record with bbox info ---
+        if 'bbox' not in record_to_update:
+            record_to_update['bbox'] = json.dumps(json_response, ensure_ascii=False)
+        
+            # Update the separate bboxes.jsonl file as well
+            bbox_idx = len(all_episode_bboxes_data)
+            all_episode_bboxes_data.append({
+                'bbox_index': bbox_idx,
+                'bbox': json_response
+            })
+
+def process_parquet(parquet_paths, tasks=None, bboxes_json_path: Path = None, dataset_tag=""):
+    """
+    Processes a list of Parquet files, batching images across files for efficiency,
+    and then writes the updated data back to each file.
+    """
     global finished_parquet_list
     # global failed_dataset_list
 
-    # To store {'bbox_index': X, 'bbox': Y} for the entire dataset
+    # Load shared bbox data if it exists
     if bboxes_json_path and bboxes_json_path.exists():
         all_episode_bboxes_data = load_list_from_jsonl(str(bboxes_json_path))
     else:
         all_episode_bboxes_data = []
 
-    tasks_available = True
-    if USE_SUBTASK_CONDITIONING:
-        if tasks is None:
-            logging.warning(f"No tasks provided. Disabling subtask conditioning for all files.")
-            tasks_available = False
+    tasks_available = USE_SUBTASK_CONDITIONING and tasks is not None
+    if USE_SUBTASK_CONDITIONING and tasks is None:
+        logging.warning("No tasks provided. Disabling subtask conditioning for all files.")
 
-    for parquet_path_str in tqdm(parquet_paths, desc=f"Processing Parquet Files", unit="files"):
-        parquet_path = Path(parquet_path_str) # Ensure it's a Path object
+    # --- Data structures for cross-file batching ---
+    # Batches that will accumulate data across multiple parquet files
+    current_batch_images = []
+    current_batch_task_descs = []
+    current_batch_metadata = []
+
+    # In-memory storage for all records from all files to be processed
+    # Key: str(parquet_path), Value: list of record dictionaries
+    in_memory_data = {}
+    original_features_map = {}
+
+    # =========================================================================
+    # PHASE 1: DATA COLLECTION AND BATCH PROCESSING
+    # =========================================================================
+    logging.info("Phase 1: Collecting images and processing batches...")
+    for parquet_path_str in tqdm(parquet_paths, desc="Collecting from Parquet Files", unit="file"):
+        parquet_path = Path(parquet_path_str)
         if str(parquet_path) in finished_parquet_list:
-            logging.info(f"Skipping already processed file: {parquet_path_str}")
+            logging.info(f"Skipping already processed file: {parquet_path}")
             continue
 
         try:
             episode = load_dataset("parquet", data_files=str(parquet_path), split='train')
             features = episode.features
-            logging.debug(f"Loaded dataset from {parquet_path} with {len(episode)} records.")
+            logging.debug(f"Loaded {parquet_path} with {len(episode)} records.")
         except Exception as e:
-            logging.error(f"Error loading {parquet_path}: {e}")
-            # failed_dataset_list.append({"path": str(parquet_path), "reason": f"Load error: {e}", "features": None})
-            return False
+            logging.error(f"Error loading {parquet_path}: {e}. Skipping file.")
+            # failed_dataset_list.append({"path": str(parquet_path), "reason": f"Load error: {e}"})
+            continue # Skip to the next file
 
-        ### only deal with key frames ###
         if 'sub_task_index' not in features:
-            # logging.info(f"Skipped {parquet_path} because it does not have 'sub_task_index' column.")
+            logging.info(f"Skipping {parquet_path} because it lacks 'sub_task_index' column.")
             continue
-
         
-        image_columns_info = [] # List of (col_name, col_type_enum_or_class)
-        # suspected_image_columns = [col for col in features if col.startswith("observation.images.cam")]
+        # Store records and features in our in-memory maps
+        temp_episode_records = list(episode)
+        in_memory_data[str(parquet_path)] = temp_episode_records
+        original_features_map[str(parquet_path)] = features
+
+        # --- Identify image columns ---
+        image_columns_info = []
         suspected_image_columns = [col for col in features if col == "observation.images.cam"]
         for col in suspected_image_columns:
             if isinstance(features[col], ImageHF):
                 image_columns_info.append((col, ImageHF))
             elif isinstance(features[col], dict) and 'bytes' in features[col]:
-                image_columns_info.append((col, dict)) # Using dict as a sentinel for byte-based images
-            # else:
-            #     logging.warning(f"Column {col} in {parquet_path} looks like an image column but has unrecognized type: {type(features[col])}")
+                image_columns_info.append((col, dict))
 
         if not image_columns_info:
-            logging.error(f"No recognized image columns found in {parquet_path}. Skipping.")
-            # failed_dataset_list.append({"path": str(parquet_path), "reason": "No image columns", "features": features})
-            return False
+            logging.error(f"No recognized image columns in {parquet_path}. Skipping.")
+            del in_memory_data[str(parquet_path)]
+            del original_features_map[str(parquet_path)]
+            continue
 
-        processed_records_for_this_file = []
-        
-        # --- Batching Logic ---
-        current_batch_images = []
-        current_batch_task_descs = []
-        current_batch_metadata = [] # To store (record_idx_in_episode, image_col_name, image_col_type)
-
-        temp_episode_records = list(episode) # Convert to list for easier indexing if needed later
-
-        for r_idx, record in tqdm(enumerate(temp_episode_records), desc=f" Records", total=len(temp_episode_records), leave=False):
-            ### only deal with key frames ###
-            ### which means sub_task_index != -1 ###
+        # --- Iterate records to fill batches ---
+        for r_idx, record in enumerate(temp_episode_records):
             if record.get('sub_task_index', -1) == -1:
                 continue
 
-            r_task_index = record.get('task_index', None)
+            # --- Task description logic ---
             task_str = None
-            
-            final_use_task_for_record = USE_SUBTASK_CONDITIONING and tasks_available
+            final_use_task_for_record = tasks_available
             if final_use_task_for_record:
+                r_task_index = record.get('task_index', None)
                 if 'task_index' not in features:
-                    # This warning will print once per file if task_index is missing
                     if r_idx == 0: logging.warning(f"No task_index column in {parquet_path}. Disabling subtask conditioning for this file.")
                     final_use_task_for_record = False
                 elif r_task_index is not None:
                     try:
-                        task_row = tasks[tasks['task_index'] == r_task_index]
-                        if not task_row.empty:
-                            task_str = task_row.iloc[0]['task']
-                        else:
-                            # This warning will print for each record missing a task_index map
-                            logging.warning(f"Task_index {r_task_index} not found in tasks.jsonl for {parquet_path}, record {r_idx}. Disabling subtask for this record.")
-                            final_use_task_for_record = False # Disable for this specific record's images
+                        # task_row = tasks[tasks['task_index'] == r_task_index]
+                        # task_str = task_row.iloc[0]['task'] if not task_row.empty else None
+                        task_str = tasks[int(r_task_index)]
+                        if task_str is None:
+                            final_use_task_for_record = False
+                            logging.warning(f"Task_index {r_task_index} not in tasks.jsonl for {parquet_path}, record {r_idx}.")
                     except Exception as e:
-                        logging.warning(f"Error retrieving task for task_index {r_task_index} in {parquet_path}, record {r_idx}: {e}. Disabling subtask for this record.")
-                        final_use_task_for_record = False # Disable for this specific record's images
-                else: # r_task_index is None
-                    if r_idx == 0: logging.info(f"Record {r_idx} in {parquet_path} has None for task_index. Disabling subtask for its images.")
+                        logging.warning(f"Error retrieving task for {r_task_index} in {parquet_path}, record {r_idx}: {e}.")
+                        final_use_task_for_record = False
+                else:
                     final_use_task_for_record = False
 
-
+            # --- Add images from this record to the batch ---
             for image_col_name, image_col_type in image_columns_info:
                 try:
+                    pil_image = None
                     if image_col_type == ImageHF:
-                        pil_image = record[image_col_name]
-                        if pil_image is None: # Skip if image is None
-                            logging.warning(f"Image is None for record {r_idx}, column {image_col_name} in {parquet_path}. Skipping.")
-                            continue
-                    elif image_col_type == dict: # Bytes image
+                        if record[image_col_name] is not None:
+                            pil_image = record[image_col_name]
+                    elif image_col_type == dict:
                         img_bytes_data = record[image_col_name]
-                        if img_bytes_data is None or img_bytes_data.get('bytes') is None:
-                             logging.warning(f"Image bytes data is None for record {r_idx}, column {image_col_name} in {parquet_path}. Skipping.")
-                             continue
-                        pil_image = Image.open(io.BytesIO(img_bytes_data['bytes']))
-                    else: # Should not happen given earlier checks
-                        logging.error(f"Unexpected image type {image_col_type} for column {image_col_name}")
+                        if img_bytes_data and img_bytes_data.get('bytes'):
+                            pil_image = Image.open(io.BytesIO(img_bytes_data['bytes']))
+                    
+                    if pil_image is None:
+                        logging.warning(f"Image is None for record {r_idx}, col {image_col_name} in {parquet_path}. Skipping image.")
                         continue
                     
+                    # Add to cross-file batch
                     current_batch_images.append(pil_image)
-                    # ###
-                    # # debug: save img to inspection_images/debug/
-                    # pil_image.save(f"inspection_images/debug/{r_idx}_{image_col_name}_o.jpg")
-                    # ###
                     current_batch_task_descs.append(task_str if final_use_task_for_record else None)
                     current_batch_metadata.append({
-                        "original_record_idx": r_idx, # Index within the current parquet file's episode
+                        "original_parquet_path": str(parquet_path), # CRITICAL: Store which file this came from
+                        "original_record_idx": r_idx,
                         "image_col_name": image_col_name,
-                        "image_col_type": image_col_type,
-                        "task_str_used": task_str if final_use_task_for_record else None # For inspection image saving
+                        "task_str_used": task_str if final_use_task_for_record else None
                     })
                 except Exception as e:
-                    logging.error(f"Error processing image for record {r_idx}, col {image_col_name} in {parquet_path}: {e}")
-                    # Decide how to handle: skip this image, skip record, or skip file.
-                    # For now, let's skip this image and continue batching others.
+                    logging.error(f"Error preparing image from record {r_idx}, col {image_col_name} in {parquet_path}: {e}")
                     continue
 
-
+                # --- If batch is full, process it ---
                 if len(current_batch_images) >= BATCH_SIZE:
-                    # Process the current batch
-                    logging.debug(f"Processing batch of size {len(current_batch_images)}")
-                    batched_json_responses, _ = grounding_pipeline_batched(
-                        images=current_batch_images,
-                        model=q_model,
-                        processor=q_processor,
-                        task_descs=current_batch_task_descs,
-                        SHOW_OBJECT_NAME=SHOW_OBJECT_NAME,
-                        USE_SUBTASK_CONDITIONING=USE_SUBTASK_CONDITIONING # This is now handled per-image by task_descs
+                    _process_and_apply_batch(
+                        current_batch_images, current_batch_metadata, current_batch_task_descs,
+                        in_memory_data, all_episode_bboxes_data, original_features_map,
+                        model=q_model, processor=q_processor, dataset_tag=dataset_tag,
+                        show_object_name=SHOW_OBJECT_NAME, use_subtask_conditioning=USE_SUBTASK_CONDITIONING
                     )
+                    # Clear batches for the next round
+                    current_batch_images, current_batch_task_descs, current_batch_metadata = [], [], []
 
-                    # Distribute results back to records
-                    for i in range(len(batched_json_responses)):
-                        meta = current_batch_metadata[i]
-                        record_to_update = temp_episode_records[meta["original_record_idx"]]
-                        # output_image = batched_output_images[i]
-                        json_response = batched_json_responses[i]
+    # --- Process the final remaining batch ---
+    if current_batch_images:
+        logging.info(f"Processing final batch of size {len(current_batch_images)}.")
+        _process_and_apply_batch(
+            current_batch_images, current_batch_metadata, current_batch_task_descs,
+            in_memory_data, all_episode_bboxes_data, original_features_map,
+            model=q_model, processor=q_processor, dataset_tag=dataset_tag,
+            show_object_name=SHOW_OBJECT_NAME, use_subtask_conditioning=USE_SUBTASK_CONDITIONING
+        )
 
-                        if SAVE_INSPECTION_IMAGE and (random.random() < RANDOM_SAMPLE_RATE):
-                            global inspection_image_id
-                            inspection_image_id += 1
-                            parquet_info_str = (f"{dataset_tag}_{meta['image_col_name'][-1]}").replace('/', '-').replace('\\', '-').replace('.', '-')
-                            # output_image.save(f"inspection_images/{inspection_image_id}_{parquet_info_str}.jpg")
-                            save_json_infos = {
-                                'parquet_path': str(parquet_path),
-                                'record_idx': meta["original_record_idx"],
-                                'image_col_name': meta['image_col_name'],
-                                'task_desc': meta['task_str_used'], # Use the actual task string passed
-                                'json_response': json_response
-                            }
-                            with open(f"inspection_images/{inspection_image_id}_{parquet_info_str}.json", 'w') as json_file:
-                                json.dump(save_json_infos, json_file, ensure_ascii=False, indent=4)
+    # =========================================================================
+    # PHASE 2: WRITING UPDATED DATA BACK TO FILES
+    # =========================================================================
+    logging.info("Phase 2: Saving updated parquet files...")
+    if in_memory_data:
+        logging.warning(f"Saving {len(in_memory_data)} file(s) that remained in memory.")
+        remaining_paths = list(in_memory_data.keys())
+        for path_str in tqdm(remaining_paths, desc="Saving Remaining Files", unit="file"):
+            if path_str in in_memory_data: # Check if it wasn't already processed by a concurrent call
+                _save_and_clear_file_from_memory(
+                    path_str, in_memory_data, original_features_map
+                )
+        save_finish_list_to_json()
 
-                        # if meta["image_col_type"] == ImageHF:
-                        #     record_to_update[f"{meta['image_col_name']}_g"] = output_image
-                        # elif meta["image_col_type"] == dict:
-                        #     buffer = io.BytesIO()
-                        #     img_format = output_image.format or "PNG"
-                        #     output_image.save(buffer, format=img_format)
-                        #     record_to_update[f"{meta['image_col_name']}_g"] = record_to_update[meta["image_col_name"]].copy()
-                        #     record_to_update[f"{meta['image_col_name']}_g"]['bytes'] = buffer.getvalue()
-
-                        if 'bbox_index' not in record_to_update: # Only add once per record
-                            bbox_idx = len(all_episode_bboxes_data)
-                            all_episode_bboxes_data.append({
-                                'bbox_index': bbox_idx,
-                                'bbox': json_response # This is the json_response for *this specific image*
-                            })
-                            # record_to_update['bbox_index'] = bbox_idx
-                            record_to_update['bbox'] = json.dumps(json_response, ensure_ascii=False)
-                    
-                    # Clear batches
-                    current_batch_images = []
-                    current_batch_task_descs = []
-                    current_batch_metadata = []
-        
-        # Process any remaining images in the last batch
-        if current_batch_images:
-            logging.debug(f"Processing final batch of size {len(current_batch_images)}")
-            batched_json_responses, _ = grounding_pipeline_batched(
-                images=current_batch_images, model=q_model, processor=q_processor,
-                task_descs=current_batch_task_descs, SHOW_OBJECT_NAME=SHOW_OBJECT_NAME,
-                USE_SUBTASK_CONDITIONING=USE_SUBTASK_CONDITIONING # Handled by task_descs
-            )
-            for i in range(len(batched_json_responses)): # Same logic as above
-                meta = current_batch_metadata[i]
-                record_to_update = temp_episode_records[meta["original_record_idx"]]
-                # output_image = batched_output_images[i]
-                json_response = batched_json_responses[i]
-
-                if SAVE_INSPECTION_IMAGE and (random.random() < RANDOM_SAMPLE_RATE):
-                    inspection_image_id += 1
-                    parquet_info_str = (f"{dataset_tag}_{meta['image_col_name'][-1]}").replace('/', '-').replace('\\', '-').replace('.', '-')
-                    # output_image.save(f"inspection_images/{inspection_image_id}_{parquet_info_str}.jpg")
-                    save_json_infos = {
-                        'parquet_path': str(parquet_path), 'record_idx': meta["original_record_idx"],
-                        'image_col_name': meta['image_col_name'], 'task_desc': meta['task_str_used'],
-                        'json_response': json_response
-                    }
-                    with open(f"inspection_images/{inspection_image_id}_{parquet_info_str}.json", 'w') as json_file:
-                        json.dump(save_json_infos, json_file, ensure_ascii=False, indent=4)
-
-                # if meta["image_col_type"] == ImageHF:
-                #     record_to_update[f"{meta['image_col_name']}_g"] = output_image
-                # elif meta["image_col_type"] == dict:
-                #     buffer = io.BytesIO()
-                #     img_format = output_image.format or "PNG"
-                #     output_image.save(buffer, format=img_format)
-                #     record_to_update[f"{meta['image_col_name']}_g"] = record_to_update[meta["image_col_name"]].copy() # Copy original dict structure
-                #     record_to_update[f"{meta['image_col_name']}_g"]['bytes'] = buffer.getvalue()
-                
-                if 'bbox_index' not in record_to_update:
-                    bbox_idx = len(all_episode_bboxes_data)
-                    all_episode_bboxes_data.append({'bbox_index': bbox_idx, 'bbox': json_response})
-                    # record_to_update['bbox_index'] = bbox_idx
-                    record_to_update['bbox'] = json.dumps(json_response, ensure_ascii=False)
-        
-        # All records for this file have been (potentially) updated in temp_episode_records
-        processed_records_for_this_file = temp_episode_records
-
-        # Save updated parquet
-        new_features = features.copy()
-        # if 'bbox_index' not in new_features: # Add if not already there from a previous run
-        #     new_features['bbox_index'] = Value('int64')
-        if 'bbox' not in new_features:
-            new_features['bbox'] = Value("string")
-        # for image_col_name, image_col_type in image_columns_info:
-        #     if f"{image_col_name}_g" not in new_features:
-        #         new_features[f"{image_col_name}_g"] = features[image_col_name] # Keep the original type
-        
-        if processed_records_for_this_file:
-            updated_dataset = Dataset.from_list(processed_records_for_this_file, features=new_features)
-        else:
-            logging.error(f"No records processed for {parquet_path}, creating empty dataset with new features.")
-            # failed_dataset_list.append({"path": str(parquet_path), "reason": f"Process error: 'processed_records_for_this_file' is empty", "features": new_features})
-            return False
-        
-        try:
-            updated_dataset.to_parquet(str(parquet_path))
+    # --- Final save for shared data and progress tracking ---
+    try:
+        if bboxes_json_path:
             save_list_to_jsonl(all_episode_bboxes_data, str(bboxes_json_path))
-            save_finish_list_to_json()
-            # logging.info(f"Successfully processed and saved {parquet_path}")
-            # print(f"Successfully processed and saved {parquet_path}.\nUpdated {bboxes_json_path} with {len(all_episode_bboxes_data)} items.")
-            finished_parquet_list.append(str(parquet_path))
-        except Exception as e:
-            logging.error(f"Error saving updated dataset to {parquet_path}: {e}")
-            # failed_dataset_list.append({"path": str(parquet_path), "reason": f"Save error: {e}", "features": new_features})
-            return False
+            logging.info(f"Updated {bboxes_json_path} with {len(all_episode_bboxes_data)} total items.")
+        save_finish_list_to_json()
+    except Exception as e:
+        logging.error(f"Error saving final JSONL/finish list files: {e}")
+        return False
 
-
+    logging.info("All files processed successfully.")
     return True
-
 
 def process_dataset(dataset_path: str):
     if not OVERWRITE_ORIGINAL_DATASET:
@@ -399,7 +423,8 @@ def process_dataset(dataset_path: str):
     # load tasks.jsonl
     task_json_path = output_dataset_path / "meta" / "tasks.jsonl"
     if task_json_path.exists():
-        tasks = pandas.read_json(task_json_path, lines=True)
+        tasks_df = pandas.read_json(task_json_path, lines=True)
+        tasks = {int(row['task_index']): row['task'] for _, row in tasks_df.iterrows()}
     else:
         tasks = None
 
