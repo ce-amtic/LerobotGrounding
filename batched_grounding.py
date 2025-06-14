@@ -35,8 +35,8 @@ SHOW_OBJECT_NAME = False
 
 USE_SUBTASK_CONDITIONING = True
 
-SAVE_INSPECTION_IMAGE = True
-RANDOM_SAMPLE_RATE = 0.0005 # ratio of images that will be saved for inspection
+# SAVE_INSPECTION_IMAGE = True
+# RANDOM_SAMPLE_RATE = 0.0005 # ratio of images that will be saved for inspection
 
 OVERWRITE_ORIGINAL_DATASET = False
 
@@ -201,18 +201,18 @@ def _process_and_apply_batch(
         record_to_update = in_memory_data[path][r_idx]
 
         # --- Save inspection image logic (unchanged) ---
-        if SAVE_INSPECTION_IMAGE and (random.random() < RANDOM_SAMPLE_RATE):
-            inspection_image_id += 1
-            parquet_info_str = f"{dataset_tag}_{Path(path).stem}_{meta['image_col_name'][-1]}".replace('/', '-').replace('\\', '-')
-            save_json_infos = {
-                'parquet_path': path,
-                'record_idx': r_idx,
-                'image_col_name': meta['image_col_name'],
-                'task_desc': meta['task_str_used'],
-                'json_response': json_response
-            }
-            with open(f"inspection_images/{inspection_image_id}_{parquet_info_str}.json", 'w') as json_file:
-                json.dump(save_json_infos, json_file, ensure_ascii=False, indent=4)
+        # if SAVE_INSPECTION_IMAGE and (random.random() < RANDOM_SAMPLE_RATE):
+        #     inspection_image_id += 1
+        #     parquet_info_str = f"{dataset_tag}_{Path(path).stem}_{meta['image_col_name'][-1]}".replace('/', '-').replace('\\', '-')
+        #     save_json_infos = {
+        #         'parquet_path': path,
+        #         'record_idx': r_idx,
+        #         'image_col_name': meta['image_col_name'],
+        #         'task_desc': meta['task_str_used'],
+        #         'json_response': json_response
+        #     }
+        #     with open(f"inspection_images/{inspection_image_id}_{parquet_info_str}.json", 'w') as json_file:
+        #         json.dump(save_json_infos, json_file, ensure_ascii=False, indent=4)
 
         # --- Update the record with bbox info ---
         if 'bbox' not in record_to_update:

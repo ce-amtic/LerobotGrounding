@@ -3,7 +3,7 @@ python lerobot_explorer.py \
     --dataset-path /pdata/oxe_lerobot/austin_buds_dataset_converted_externally_to_rlds
 
 python lerobot_explorer.py \
-    --parquet-file /pdata/oxe_lerobot/ucsd_kitchen_dataset_converted_externally_to_rlds/data/chunk-000/episode_000001.parquet
+    --parquet-file /pdata/oxe_lerobot/bc_z/data/chunk-000/episode_029369.parquet
 """
 
 import os
@@ -124,7 +124,8 @@ def explore_parquet_file(parquet_path_str: str, output_base_dir: Path):
             image_columns_info.append((col_name, IMAGE_TYPE_HF))
             logging.info(f"Identified HF Image column: {col_name}")
         # Heuristic for Lerobot: observation.images.cam* often stores bytes
-        elif col_name.startswith("observation.images.cam") and isinstance(feature_type, dict) and 'bytes' in feature_type:
+        # elif col_name.startswith("observation.images.cam") and isinstance(feature_type, dict) and 'bytes' in feature_type:
+        elif col_name == "observation.images.cam" and isinstance(feature_type, dict) and 'bytes' in feature_type:
             # Further check if the 'bytes' field seems like binary data
             if hasattr(feature_type['bytes'], 'pa_type'): # Heuristic: check for pyarrow type info
                  image_columns_info.append((col_name, IMAGE_TYPE_BYTES_DICT))
@@ -152,8 +153,8 @@ def explore_parquet_file(parquet_path_str: str, output_base_dir: Path):
     logging.info(f"Found {len(dataset)} records. Showing details of random ones...")
 
     for i, record in enumerate(dataset):
-        if random.randint(0, 10) > 2:
-            continue
+        # if random.randint(0, 10) > 2:
+        #     continue
 
         logging.info(f"\n  --- Record {i} in {parquet_path.name} ---")
 
@@ -161,9 +162,11 @@ def explore_parquet_file(parquet_path_str: str, output_base_dir: Path):
         if 'bbox' in record and record['bbox'] is not None:
             logging.info(f"    bbox: {record['bbox']}")
         elif 'bbox' in features:
-            logging.info(f"    bbox: (present but None/empty)")
+            # logging.info(f"    bbox: (present but None/empty)")
+            continue
         else:
-            logging.info(f"    bbox: (column not found in this record/features)")
+            # logging.info(f"    bbox: (column not found in this record/features)")
+            continue
 
         # 3. Save images
         if image_columns_info:
@@ -192,8 +195,21 @@ def explore_parquet_file(parquet_path_str: str, output_base_dir: Path):
                         # Sanitize image column name for filename
                         img_col_filename_part = "".join(c if c.isalnum() else '_' for c in img_col_name)
                         image_save_path = file_specific_output_dir / f"record_{i}_{img_col_filename_part}.png"
+
                         pil_img.save(image_save_path)
                         logging.info(f"      Saved image from column '{img_col_name}' to: {image_save_path}")
+
+                        if 'bbox' in record and record['bbox'] is not None:
+                            # Optionally draw bbox on the image
+                            import json
+                            from qwen_grounding_utils_v3 import draw_bboxes, json_response_to_bboxes
+                            json_response = json.loads(record['bbox'])
+                            bboxes = json_response_to_bboxes(json_response)
+                            draw_bboxes(pil_img, bboxes, SHOW_OBJECT_NAME=True)
+                            bbox_image_save_path = file_specific_output_dir / f"record_{i}_{img_col_filename_part}_bbox.png"
+                            pil_img.save(bbox_image_save_path)
+                        logging.info(f"      Image with bbox saved to: {bbox_image_save_path}")
+
                     elif record.get(img_col_name) is not None:
                         logging.warning(f"      Could not decode or access image data for column '{img_col_name}'.")
                     # else: image data is None, skip silently

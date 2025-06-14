@@ -122,6 +122,40 @@ def normolize_bbox(json_response, width, height):
         })
     return processed_json_response
 
+def json_response_to_bboxes(json_response):
+    bboxes = []
+    colors = ["red", "lime", "blue", "yellow", "cyan", "magenta", "deeppink", "orange", "purple", "lightgreen"]
+    random.shuffle(colors)
+    for i, obj in enumerate(json_response):
+        bboxes.append({
+            "box": obj['bbox_2d'],
+            "name": obj['label'],
+            "color": colors[i % len(colors)]
+        })
+    return bboxes
+
+def draw_bboxes(image, bboxes, SHOW_OBJECT_NAME=False):
+    draw = ImageDraw.Draw(image)
+    H, W = image.height, image.width
+    try:
+        font_path = "fonts/CourierPrime-Regular.ttf"
+        if not os.path.exists(font_path): # Fallback if specific font not found
+            font_path = "arial.ttf" # Common system font, or remove for ImageFont.load_default()
+        font = ImageFont.truetype(font_path, 20)
+    except IOError:
+        font = ImageFont.load_default()
+        # print("Drawing text with default font")
+    for bbox_info in bboxes:
+        box, name, color = bbox_info["box"], bbox_info["name"], bbox_info["color"]
+        box = [
+            int(box[0] * W), int(box[1] * H),
+            int(box[2] * W), int(box[3] * H)
+        ] 
+        draw.rectangle(box, outline=color, width=3)
+        if SHOW_OBJECT_NAME:
+            text_position = (box[0] + 2, box[1] - 18 if box[1] > 18 else box[1] + 2)
+            draw.text(text_position, name, fill=color, font=font)
+    return image
 
 ### --- model infer --- ###
 def setup_model(MODEL_NAME: str, tensor_parallel_size: int = 1, trust_remote_code: bool = True, **vllm_kwargs: Any):
