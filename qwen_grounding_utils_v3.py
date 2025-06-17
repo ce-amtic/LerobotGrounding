@@ -40,7 +40,6 @@ try:
 except ImportError:
     print("WARNING: Transformers library not found. Please install transformers (e.g., `pip install transformers`)")
 
-
 ### --- process images --- ###
 def move_to_cpu(obj):
     if isinstance(obj, torch.Tensor):

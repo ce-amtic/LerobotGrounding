@@ -4,7 +4,11 @@ CUDA_VISIBLE_DEVICES=4 TOKENIZERS_PARALLELISM=true python batched_grounding.py \
     --output-home /pdata/oxe_lerobot_g \
     --batch_size 24
 
-CUDA_VISIBLE_DEVICES=2 TOKENIZERS_PARALLELISM=false python batched_grounding.py \
+HF_DATASETS_CACHE="/fyh/.cache/huggingface/datasets" \
+HF_HOME="fyh/.cache/huggingface" \
+CUDA_VISIBLE_DEVICES=7 \
+TOKENIZERS_PARALLELISM=false \
+python batched_grounding.py \
     --dataset-home /pdata/oxe_lerobot \
     --inplace 1 \
     --batch-size 1024
@@ -35,8 +39,8 @@ SHOW_OBJECT_NAME = False
 
 USE_SUBTASK_CONDITIONING = True
 
-# SAVE_INSPECTION_IMAGE = True
-# RANDOM_SAMPLE_RATE = 0.0005 # ratio of images that will be saved for inspection
+SAVE_INSPECTION_IMAGE = True
+RANDOM_SAMPLE_RATE = 0.0005 # ratio of images that will be saved for inspection
 
 OVERWRITE_ORIGINAL_DATASET = False
 
@@ -58,11 +62,11 @@ def save_finish_list_to_json():
             finished_parquets.append({"path": item})
     save_list_to_jsonl(finished_parquets, "finished_parquets.jsonl")
 
-# failed_dataset_list = load_list_from_jsonl("failed_datasets.jsonl")
-# def save_fail_list_to_json():
-#     global failed_dataset_list
-#     logging.info(f"There are {len(failed_dataset_list)} datasets failed to process. The paths and features will be saved to './failed_datasets.jsonl'.")
-#     save_list_to_jsonl(failed_dataset_list, "failed_datasets.jsonl")
+failed_dataset_list = load_list_from_jsonl("failed_datasets.jsonl")
+def save_fail_list_to_json():
+    global failed_dataset_list
+    logging.info(f"There are {len(failed_dataset_list)} datasets failed to process. The paths and features will be saved to './failed_datasets.jsonl'.")
+    save_list_to_jsonl(failed_dataset_list, "failed_datasets.jsonl")
 
 def handle_sigint(signum, frame):
     logging.info("Caught Ctrl+C, saving list before exit...")
@@ -126,13 +130,8 @@ def _save_and_clear_file_from_memory(
         return
 
     try:
-        original_features = original_features_map[path_str]
-        new_features = original_features.copy()
-        
-        if 'bbox' not in new_features:
-            new_features['bbox'] = Value("string")
-        
-        updated_dataset = Dataset.from_list(updated_records, features=new_features)
+        features = original_features_map[path_str]
+        updated_dataset = Dataset.from_list(updated_records, features=features)
         updated_dataset.to_parquet(path_str)
         
         # Mark as finished ONLY after successful save
@@ -140,9 +139,11 @@ def _save_and_clear_file_from_memory(
         logging.info(f"Successfully saved {path_str}")
 
     except Exception as e:
-        logging.error(f"Error saving updated dataset to {path_str}: {e}. It will remain in memory for final save attempt.")
-        # We DON'T remove it from memory if save fails, allowing a final attempt later.
-        return
+        logging.error(f"Error saving updated dataset to {path_str}: {e}.")
+        failed_dataset_list.append({
+            "path": path_str,
+            "reason": f"Save error: {e}", 
+        })
 
     # --- Cleanup ---
     # If save was successful, remove data from all tracking dictionaries.
@@ -194,28 +195,29 @@ def _process_and_apply_batch(
                 in_memory_data,
                 original_features_map
             )
-            save_finish_list_to_json()
         prevpath = path
 
         # Get the specific record from our in-memory store
         record_to_update = in_memory_data[path][r_idx]
 
-        # --- Save inspection image logic (unchanged) ---
-        # if SAVE_INSPECTION_IMAGE and (random.random() < RANDOM_SAMPLE_RATE):
-        #     inspection_image_id += 1
-        #     parquet_info_str = f"{dataset_tag}_{Path(path).stem}_{meta['image_col_name'][-1]}".replace('/', '-').replace('\\', '-')
-        #     save_json_infos = {
-        #         'parquet_path': path,
-        #         'record_idx': r_idx,
-        #         'image_col_name': meta['image_col_name'],
-        #         'task_desc': meta['task_str_used'],
-        #         'json_response': json_response
-        #     }
-        #     with open(f"inspection_images/{inspection_image_id}_{parquet_info_str}.json", 'w') as json_file:
-        #         json.dump(save_json_infos, json_file, ensure_ascii=False, indent=4)
+        # --- Save inspection image logic ---
+        if SAVE_INSPECTION_IMAGE and (random.random() < RANDOM_SAMPLE_RATE):
+            inspection_image_id += 1
+            parquet_info_str = f"{dataset_tag}_{Path(path).stem}_{meta['image_col_name'][-1]}".replace('/', '-').replace('\\', '-')
+            save_json_infos = {
+                'parquet_path': path,
+                'record_idx': r_idx,
+                'image_col_name': meta['image_col_name'],
+                'task_desc': meta['task_str_used'],
+                'json_response': json_response
+            }
+            with open(f"inspection_images/{inspection_image_id}_{parquet_info_str}.json", 'w') as json_file:
+                json.dump(save_json_infos, json_file, ensure_ascii=False, indent=4)
 
         # --- Update the record with bbox info ---
         if 'bbox' not in record_to_update:
+            if 'bbox' not in original_features_map[path]:
+                original_features_map[path]['bbox'] = Value("string")
             record_to_update['bbox'] = json.dumps(json_response, ensure_ascii=False)
         
             # Update the separate bboxes.jsonl file as well
@@ -225,13 +227,28 @@ def _process_and_apply_batch(
                 'bbox': json_response
             })
 
+    if prevpath is not None:
+        _save_and_clear_file_from_memory(
+            prevpath,
+            in_memory_data,
+            original_features_map
+        )
+    
+    save_finish_list_to_json()
+
+    # clear huggingface cache
+    HF_CACHE_DIR = os.getenv("HF_DATASETS_CACHE", "/fyh/.cache/huggingface/datasets")
+    if HF_CACHE_DIR:
+        shutil.rmtree(HF_CACHE_DIR, ignore_errors=True)
+    return
+
 def process_parquet(parquet_paths, tasks=None, bboxes_json_path: Path = None, dataset_tag=""):
     """
     Processes a list of Parquet files, batching images across files for efficiency,
     and then writes the updated data back to each file.
     """
     global finished_parquet_list
-    # global failed_dataset_list
+    global failed_dataset_list
 
     # Load shared bbox data if it exists
     if bboxes_json_path and bboxes_json_path.exists():
@@ -261,7 +278,7 @@ def process_parquet(parquet_paths, tasks=None, bboxes_json_path: Path = None, da
     for parquet_path_str in tqdm(parquet_paths, desc="Collecting from Parquet Files", unit="file"):
         parquet_path = Path(parquet_path_str)
         if str(parquet_path) in finished_parquet_list:
-            logging.info(f"Skipping already processed file: {parquet_path}")
+            # logging.info(f"Skipping already processed file: {parquet_path}")
             continue
 
         try:
@@ -269,12 +286,13 @@ def process_parquet(parquet_paths, tasks=None, bboxes_json_path: Path = None, da
             features = episode.features
             logging.debug(f"Loaded {parquet_path} with {len(episode)} records.")
         except Exception as e:
-            logging.error(f"Error loading {parquet_path}: {e}. Skipping file.")
-            # failed_dataset_list.append({"path": str(parquet_path), "reason": f"Load error: {e}"})
+            # logging.error(f"Error loading {parquet_path}: {e}. Skipping file.")
+            failed_dataset_list.append({"path": str(parquet_path), "reason": f"Load error: {e}"})
             continue # Skip to the next file
 
         if 'sub_task_index' not in features:
-            logging.info(f"Skipping {parquet_path} because it lacks 'sub_task_index' column.")
+            # logging.info(f"Skipping {parquet_path} because it lacks 'sub_task_index' column.")
+            finished_parquet_list.append(str(parquet_path))
             continue
         
         # Store records and features in our in-memory maps
@@ -292,7 +310,7 @@ def process_parquet(parquet_paths, tasks=None, bboxes_json_path: Path = None, da
                 image_columns_info.append((col, dict))
 
         if not image_columns_info:
-            logging.error(f"No recognized image columns in {parquet_path}. Skipping.")
+            # logging.error(f"No recognized image columns in {parquet_path}. Skipping.")
             del in_memory_data[str(parquet_path)]
             del original_features_map[str(parquet_path)]
             continue
@@ -354,15 +372,17 @@ def process_parquet(parquet_paths, tasks=None, bboxes_json_path: Path = None, da
                     continue
 
                 # --- If batch is full, process it ---
-                if len(current_batch_images) >= BATCH_SIZE:
-                    _process_and_apply_batch(
-                        current_batch_images, current_batch_metadata, current_batch_task_descs,
-                        in_memory_data, all_episode_bboxes_data, original_features_map,
-                        model=q_model, processor=q_processor, dataset_tag=dataset_tag,
-                        show_object_name=SHOW_OBJECT_NAME, use_subtask_conditioning=USE_SUBTASK_CONDITIONING
-                    )
-                    # Clear batches for the next round
-                    current_batch_images, current_batch_task_descs, current_batch_metadata = [], [], []
+        
+        # --- After processing all records in this file, check if we have a full batch ---
+        if len(current_batch_images) >= BATCH_SIZE:
+            _process_and_apply_batch(
+                current_batch_images, current_batch_metadata, current_batch_task_descs,
+                in_memory_data, all_episode_bboxes_data, original_features_map,
+                model=q_model, processor=q_processor, dataset_tag=dataset_tag,
+                show_object_name=SHOW_OBJECT_NAME, use_subtask_conditioning=USE_SUBTASK_CONDITIONING
+            )
+            # Clear batches for the next round
+            current_batch_images, current_batch_task_descs, current_batch_metadata = [], [], []
 
     # --- Process the final remaining batch ---
     if current_batch_images:
@@ -377,18 +397,7 @@ def process_parquet(parquet_paths, tasks=None, bboxes_json_path: Path = None, da
     # =========================================================================
     # PHASE 2: WRITING UPDATED DATA BACK TO FILES
     # =========================================================================
-    logging.info("Phase 2: Saving updated parquet files...")
-    if in_memory_data:
-        logging.warning(f"Saving {len(in_memory_data)} file(s) that remained in memory.")
-        remaining_paths = list(in_memory_data.keys())
-        for path_str in tqdm(remaining_paths, desc="Saving Remaining Files", unit="file"):
-            if path_str in in_memory_data: # Check if it wasn't already processed by a concurrent call
-                _save_and_clear_file_from_memory(
-                    path_str, in_memory_data, original_features_map
-                )
-        save_finish_list_to_json()
-
-    # --- Final save for shared data and progress tracking ---
+    logging.info("Phase 2: final save for shared data and progress tracking...")
     try:
         if bboxes_json_path:
             save_list_to_jsonl(all_episode_bboxes_data, str(bboxes_json_path))
@@ -495,7 +504,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     finished_parquet_list.append(str(time.strftime('%Y-%m-%d %H:%M:%S',time.localtime(time.time()))))
-    # failed_dataset_list.append({"time": str(time.strftime('%Y-%m-%d %H:%M:%S',time.localtime(time.time())))})
+    failed_dataset_list.append({"time": str(time.strftime('%Y-%m-%d %H:%M:%S',time.localtime(time.time())))})
     
     if args.inplace == 1:
         OVERWRITE_ORIGINAL_DATASET = True

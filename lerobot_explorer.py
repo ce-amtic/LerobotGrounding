@@ -3,7 +3,7 @@ python lerobot_explorer.py \
     --dataset-path /pdata/oxe_lerobot/austin_buds_dataset_converted_externally_to_rlds
 
 python lerobot_explorer.py \
-    --parquet-file /pdata/oxe_lerobot/bc_z/data/chunk-000/episode_029369.parquet
+    --parquet-file /pdata/oxe_lerobot/ucsd_pick_and_place_dataset_converted_externally_to_rlds/data/chunk-000/episode_001111.parquet
 """
 
 import os
@@ -13,11 +13,13 @@ import argparse
 import logging
 import shutil
 import random
+import json
 from pathlib import Path
 from PIL import Image as PILImage # Renamed to avoid conflict with datasets.Image
 from tqdm import tqdm
 from datasets import load_dataset
 from datasets.features.image import Image as HFImage # Hugging Face Image type
+from qwen_grounding_utils_v3 import draw_bboxes, json_response_to_bboxes
 
 # --- Configuration ---
 LOG_LEVEL = logging.INFO
@@ -31,24 +33,25 @@ if os.getenv("DEBUG"):
 
 def user_prompt(message="Continue? (y/n/q to quit all): ", default_yes=False):
     """Prompts the user for input and returns True for 'y', False for 'n', 'q' to quit."""
-    while True:
-        if default_yes:
-            response = input(f"{message} [Y/n/q]: ").strip().lower()
-            if response == "" or response == "y":
-                return True
-            elif response == "n":
-                return False
-            elif response == "q":
-                return "quit"
-        else:
-            response = input(f"{message} [y/N/q]: ").strip().lower()
-            if response == "y":
-                return True
-            elif response == "" or response == "n":
-                return False
-            elif response == "q":
-                return "quit"
-        print("Invalid input. Please enter 'y', 'n', or 'q'.")
+    return True
+    # while True:
+    #     if default_yes:
+    #         response = input(f"{message} [Y/n/q]: ").strip().lower()
+    #         if response == "" or response == "y":
+    #             return True
+    #         elif response == "n":
+    #             return False
+    #         elif response == "q":
+    #             return "quit"
+    #     else:
+    #         response = input(f"{message} [y/N/q]: ").strip().lower()
+    #         if response == "y":
+    #             return True
+    #         elif response == "" or response == "n":
+    #             return False
+    #         elif response == "q":
+    #             return "quit"
+    #     print("Invalid input. Please enter 'y', 'n', or 'q'.")
 
 def find_parquet_files(dataset_root_path: Path):
     """
@@ -201,8 +204,6 @@ def explore_parquet_file(parquet_path_str: str, output_base_dir: Path):
 
                         if 'bbox' in record and record['bbox'] is not None:
                             # Optionally draw bbox on the image
-                            import json
-                            from qwen_grounding_utils_v3 import draw_bboxes, json_response_to_bboxes
                             json_response = json.loads(record['bbox'])
                             bboxes = json_response_to_bboxes(json_response)
                             draw_bboxes(pil_img, bboxes, SHOW_OBJECT_NAME=True)
