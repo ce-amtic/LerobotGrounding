@@ -348,13 +348,17 @@ def grounding_pipeline_batched(
     for i, task_desc in enumerate(task_descs):
         if USE_SUBTASK_CONDITIONING and task_desc:
             question = (
-                f"This is a picture of using a robotic arm to complete a specific task. The task completed in the picture is: {task_desc}.\n"
-                "Box out the items relevant with the task in the image, output its bbox coordinates using JSON format."
+                f"This image shows a robotic arm performing the task: {task_desc}.\n"
+                "Identify and box all task-relevant objects in the image. "
+                "Label each with its name.\n"
+                "Output its bbox coordinates using JSON format."
             )
         else:
             question = (
                 "This is a picture of using a robotic arm to complete a specific task.\n"
-                "Box out the items relevant with the task in the image, output its bbox coordinates using JSON format."
+                "Identify and box all task-relevant objects in the image. "
+                "Label each with its name.\n"
+                "Output its bbox coordinates using JSON format."
             )
         questions.append(question)
 
