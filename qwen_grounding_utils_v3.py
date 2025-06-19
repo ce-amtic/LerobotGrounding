@@ -93,7 +93,19 @@ def improved_json_parser(text_response: str):
                 pass
     raise ValueError(f"Could not extract valid JSON from the input string: '{text_response[:100]}...'")
 
-def normolize_bbox(json_response, width, height):
+def check_normalized(json_response):
+    for obj in json_response:
+        bbox = obj.get('bbox_2d')
+        if not bbox:
+            continue
+        if not isinstance(bbox, list) or len(bbox) != 4:
+            return False
+        x1, y1, x2, y2 = bbox
+        if not (0 <= x1 <= 1 and 0 <= y1 <= 1 and 0 <= x2 <= 1 and 0 <= y2 <= 1):
+            return False
+    return True
+
+def normalize_bbox(json_response, width, height):
     processed_json_response = []
     for obj in json_response:
         bbox = obj.get('bbox_2d')
@@ -349,16 +361,14 @@ def grounding_pipeline_batched(
         if USE_SUBTASK_CONDITIONING and task_desc:
             question = (
                 f"This image shows a robotic arm performing the task: {task_desc}.\n"
-                "Identify and box all task-relevant objects in the image. "
-                "Label each with its name.\n"
-                "Output its bbox coordinates using JSON format."
+                "Identify and box all task-relevant objects in the image. Label each with its name. output its bbox coordinates using JSON format.\n"
+                "output each object only once."
             )
         else:
             question = (
                 "This is a picture of using a robotic arm to complete a specific task.\n"
-                "Identify and box all task-relevant objects in the image. "
-                "Label each with its name.\n"
-                "Output its bbox coordinates using JSON format."
+                "Identify and box all task-relevant objects in the image. Label each with its name. output its bbox coordinates using JSON format.\n"
+                "output each object only once."
             )
         questions.append(question)
 
@@ -387,7 +397,7 @@ def grounding_pipeline_batched(
         H, W = images[i].height, images[i].width
         try:
             raw_json_response = improved_json_parser(text_response)
-            json_response = normolize_bbox(raw_json_response, W, H)
+            json_response = normalize_bbox(raw_json_response, W, H)
         except Exception as e:
             # print(f"Failed to parse model output for image {i}: {text_response}. Error: {e}")
             json_response = {"error": f"Failed to parse JSON: {str(e)}", "original_response": text_response}

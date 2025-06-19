@@ -4,14 +4,18 @@ CUDA_VISIBLE_DEVICES=4 TOKENIZERS_PARALLELISM=true python batched_grounding.py \
     --output-home /pdata/oxe_lerobot_g \
     --batch_size 24
 
-HF_DATASETS_CACHE="/fyh/.cache/huggingface/datasets" \
-HF_HOME="fyh/.cache/huggingface" \
+source /fyh/.env/miniconda3/etc/profile.d/conda.sh
+conda activate vllm
+HF_DATASETS_CACHE="/fyh/.cache/huggingface_r7/datasets" \
+HF_HOME="fyh/.cache/huggingface_r7" \
 CUDA_VISIBLE_DEVICES=7 \
 TOKENIZERS_PARALLELISM=false \
 python batched_grounding.py \
     --dataset-home /pdata/oxe_lerobot \
     --inplace 1 \
-    --batch-size 1024
+    --batch-size 1024 \
+    --world-size 8 \
+    --rank 7
 """
 
 import os, sys, io, signal, time
@@ -22,6 +26,7 @@ import shutil
 import random
 import json
 import atexit
+from zlib import crc32
 from pathlib import Path
 from PIL import Image
 from tqdm import tqdm
@@ -54,31 +59,35 @@ from qwen_grounding_utils_v3 import load_list_from_jsonl, save_list_to_jsonl
 
 finished_parquet_list = load_list_from_jsonl("finished_parquets.jsonl")
 finished_parquet_list = [item["path"] for item in finished_parquet_list]
-def save_finish_list_to_json():
-    global finished_parquet_list
-    finished_parquets = []
-    for item in finished_parquet_list:
-        if isinstance(item, str):
-            finished_parquets.append({"path": item})
-    save_list_to_jsonl(finished_parquets, "finished_parquets.jsonl")
+# def save_finish_list_to_json():
+#     global finished_parquet_list
+#     finished_parquets = []
+#     for item in finished_parquet_list:
+#         if isinstance(item, str):
+#             finished_parquets.append({"path": item})
+#     save_list_to_jsonl(finished_parquets, "finished_parquets.jsonl")
+def dump_record_to_finish_json(new_record):
+    with open("finished_parquets.jsonl", "a", encoding="utf-8") as f:
+        f.write(json.dumps(new_record, ensure_ascii=False) + "\n")
 
-failed_dataset_list = load_list_from_jsonl("failed_datasets.jsonl")
-def save_fail_list_to_json():
-    global failed_dataset_list
-    logging.info(f"There are {len(failed_dataset_list)} datasets failed to process. The paths and features will be saved to './failed_datasets.jsonl'.")
-    save_list_to_jsonl(failed_dataset_list, "failed_datasets.jsonl")
+# failed_dataset_list = load_list_from_jsonl("failed_datasets.jsonl")
+# def save_fail_list_to_json():
+#     global failed_dataset_list
+#     logging.info(f"There are {len(failed_dataset_list)} datasets failed to process. The paths and features will be saved to './failed_datasets.jsonl'.")
+#     save_list_to_jsonl(failed_dataset_list, "failed_datasets.jsonl")
 
-def handle_sigint(signum, frame):
-    logging.info("Caught Ctrl+C, saving list before exit...")
-    save_finish_list_to_json()
-    # save_fail_list_to_json()
-    sys.exit(0)
+# def handle_sigint(signum, frame):
+#     logging.info("Caught Ctrl+C, saving list before exit...")
+#     save_finish_list_to_json()
+#     # save_fail_list_to_json()
+#     sys.exit(0)
 
 inspection_image_id = 0
 os.makedirs("inspection_images", exist_ok=True)
 
 q_model, q_processor = None, None
 
+def getnum(s: str): return crc32(s.encode('utf-8')) % 192608
 
 ### --- process parquet --- ###
 def load_parquet(dataset_path):
@@ -121,7 +130,7 @@ def _save_and_clear_file_from_memory(
     Saves a single, fully processed Parquet file to disk and removes its data
     from memory to improve efficiency.
     """
-    global finished_parquet_list
+    # global finished_parquet_list
     logging.info(f"All images for {path_str} processed. Saving and clearing from memory.")
     
     updated_records = in_memory_data.get(path_str)
@@ -130,20 +139,24 @@ def _save_and_clear_file_from_memory(
         return
 
     try:
-        features = original_features_map[path_str]
-        updated_dataset = Dataset.from_list(updated_records, features=features)
-        updated_dataset.to_parquet(path_str)
+        # features = original_features_map[path_str]
+        # updated_dataset = Dataset.from_list(updated_records, features=features)
+        # updated_dataset.to_parquet(path_str)
         
-        # Mark as finished ONLY after successful save
-        finished_parquet_list.append(path_str)
+        f_to_save = pandas.DataFrame.from_records(updated_records)
+        f_to_save.to_parquet(path_str, index=False)
+
+        dump_record_to_finish_json({
+            "path": path_str
+        })
         logging.info(f"Successfully saved {path_str}")
 
     except Exception as e:
         logging.error(f"Error saving updated dataset to {path_str}: {e}.")
-        failed_dataset_list.append({
-            "path": path_str,
-            "reason": f"Save error: {e}", 
-        })
+        # failed_dataset_list.append({
+        #     "path": path_str,
+        #     "reason": f"Save error: {e}", 
+        # })
 
     # --- Cleanup ---
     # If save was successful, remove data from all tracking dictionaries.
@@ -221,11 +234,11 @@ def _process_and_apply_batch(
             record_to_update['bbox'] = json.dumps(json_response, ensure_ascii=False)
         
             # Update the separate bboxes.jsonl file as well
-            bbox_idx = len(all_episode_bboxes_data)
-            all_episode_bboxes_data.append({
-                'bbox_index': bbox_idx,
-                'bbox': json_response
-            })
+            # bbox_idx = len(all_episode_bboxes_data)
+            # all_episode_bboxes_data.append({
+            #     'bbox_index': bbox_idx,
+            #     'bboxes': json_response
+            # })
 
     if prevpath is not None:
         _save_and_clear_file_from_memory(
@@ -234,27 +247,28 @@ def _process_and_apply_batch(
             original_features_map
         )
     
-    save_finish_list_to_json()
+    # save_finish_list_to_json()
 
     # clear huggingface cache
-    HF_CACHE_DIR = os.getenv("HF_DATASETS_CACHE", "/fyh/.cache/huggingface/datasets")
+    HF_CACHE_DIR = os.getenv("HF_DATASETS_CACHE")
     if HF_CACHE_DIR:
         shutil.rmtree(HF_CACHE_DIR, ignore_errors=True)
     return
 
-def process_parquet(parquet_paths, tasks=None, bboxes_json_path: Path = None, dataset_tag=""):
+def process_parquet(parquet_paths, tasks=None, bboxes_json_path: Path = None, dataset_tag="", world_size=1, rank=0):
     """
     Processes a list of Parquet files, batching images across files for efficiency,
     and then writes the updated data back to each file.
     """
     global finished_parquet_list
-    global failed_dataset_list
+    # global failed_dataset_list
 
     # Load shared bbox data if it exists
-    if bboxes_json_path and bboxes_json_path.exists():
-        all_episode_bboxes_data = load_list_from_jsonl(str(bboxes_json_path))
-    else:
-        all_episode_bboxes_data = []
+    # if bboxes_json_path and bboxes_json_path.exists():
+    #     all_episode_bboxes_data = load_list_from_jsonl(str(bboxes_json_path))
+    # else:
+    #     all_episode_bboxes_data = []
+    all_episode_bboxes_data = None
 
     tasks_available = USE_SUBTASK_CONDITIONING and tasks is not None
     if USE_SUBTASK_CONDITIONING and tasks is None:
@@ -280,6 +294,10 @@ def process_parquet(parquet_paths, tasks=None, bboxes_json_path: Path = None, da
         if str(parquet_path) in finished_parquet_list:
             # logging.info(f"Skipping already processed file: {parquet_path}")
             continue
+        
+        if getnum(parquet_path_str) % world_size != rank:
+            # logging.info(f"Skipping {parquet_path} for rank {rank} (path_num {getnum(parquet_path_str)}).")
+            continue
 
         try:
             episode = load_dataset("parquet", data_files=str(parquet_path), split='train')
@@ -287,12 +305,16 @@ def process_parquet(parquet_paths, tasks=None, bboxes_json_path: Path = None, da
             logging.debug(f"Loaded {parquet_path} with {len(episode)} records.")
         except Exception as e:
             # logging.error(f"Error loading {parquet_path}: {e}. Skipping file.")
-            failed_dataset_list.append({"path": str(parquet_path), "reason": f"Load error: {e}"})
+            # failed_dataset_list.append({"path": str(parquet_path), "reason": f"Load error: {e}"})
             continue # Skip to the next file
+
+        if 'bbox' in features:
+            dump_record_to_finish_json({"path": str(parquet_path)})
+            continue
 
         if 'sub_task_index' not in features:
             # logging.info(f"Skipping {parquet_path} because it lacks 'sub_task_index' column.")
-            finished_parquet_list.append(str(parquet_path))
+            # finished_parquet_list.append(str(parquet_path))
             continue
         
         # Store records and features in our in-memory maps
@@ -397,20 +419,20 @@ def process_parquet(parquet_paths, tasks=None, bboxes_json_path: Path = None, da
     # =========================================================================
     # PHASE 2: WRITING UPDATED DATA BACK TO FILES
     # =========================================================================
-    logging.info("Phase 2: final save for shared data and progress tracking...")
-    try:
-        if bboxes_json_path:
-            save_list_to_jsonl(all_episode_bboxes_data, str(bboxes_json_path))
-            logging.info(f"Updated {bboxes_json_path} with {len(all_episode_bboxes_data)} total items.")
-        save_finish_list_to_json()
-    except Exception as e:
-        logging.error(f"Error saving final JSONL/finish list files: {e}")
-        return False
+    # logging.info("Phase 2: final save for shared data and progress tracking...")
+    # try:
+    #     if bboxes_json_path:
+    #         save_list_to_jsonl(all_episode_bboxes_data, str(bboxes_json_path))
+    #         logging.info(f"Updated {bboxes_json_path} with {len(all_episode_bboxes_data)} total items.")
+    #     # save_finish_list_to_json()
+    # except Exception as e:
+    #     logging.error(f"Error saving final JSONL/finish list files: {e}")
+    #     return False
 
     logging.info("All files processed successfully.")
     return True
 
-def process_dataset(dataset_path: str):
+def process_dataset(dataset_path: str, world_size=1, rank=0):
     if not OVERWRITE_ORIGINAL_DATASET:
         # copy dataset folder to output home
         if not args.output_home:
@@ -442,7 +464,9 @@ def process_dataset(dataset_path: str):
         load_parquet(output_dataset_path), 
         tasks=tasks, 
         bboxes_json_path=output_dataset_path / "meta" / "bboxes.jsonl",
-        dataset_tag=output_dataset_path.name[:6]
+        dataset_tag=output_dataset_path.name[:6],
+        world_size=world_size,
+        rank=rank
     )
     if not finished:
         logging.error(f"Failed to process dataset {dataset_path}. Please check the logs for details.")
@@ -461,7 +485,13 @@ def main(args):
         logging.info(f"Found {len(all_datasets)} datasets in {dataset_home}.")
         for i, dataset_path in enumerate(all_datasets):
             logging.info(f"Processing {i+1} out of {len(all_datasets)}.")
-            process_dataset(dataset_path)
+            # world_size = args.world_size
+            # rank = args.rank
+            # path_num = crc32(dataset_path.encode('utf-8')) % 192608 % world_size
+            # if path_num != rank:
+            #     logging.info(f"Skipping {dataset_path} for rank {rank} (path_num {path_num}).")
+            #     continue
+            process_dataset(dataset_path, args.world_size, args.rank)
     else:
         logging.error("Please provide either --dataset-path or --dataset-home.")
         sys.exit(1)
@@ -501,18 +531,35 @@ if __name__ == "__main__":
         default=BATCH_SIZE,
         help=f"Batch size for processing (default: {BATCH_SIZE}).",
     )
+    parser.add_argument(
+        "--world-size",
+        type=int,
+        default=1,
+        help="Number of processes to use for distributed processing (default: 1)."
+    )
+    parser.add_argument(
+        "--rank",
+        type=int,
+        default=0,
+        help="Rank of the current process in distributed processing (default: 0)."
+    )
     args = parser.parse_args()
 
-    finished_parquet_list.append(str(time.strftime('%Y-%m-%d %H:%M:%S',time.localtime(time.time()))))
-    failed_dataset_list.append({"time": str(time.strftime('%Y-%m-%d %H:%M:%S',time.localtime(time.time())))})
+    # finished_parquet_list.append(str(time.strftime('%Y-%m-%d %H:%M:%S',time.localtime(time.time()))))
+    # failed_dataset_list.append({"time": str(time.strftime('%Y-%m-%d %H:%M:%S',time.localtime(time.time())))})
+    dump_record_to_finish_json({
+        "path": str(time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time()))),
+        "rank": args.rank,
+        "world_size": args.world_size
+    })
     
     if args.inplace == 1:
         OVERWRITE_ORIGINAL_DATASET = True
         logging.warning("Output home directory is not specified. Will overwrite the original dataset.")
     
-    atexit.register(save_finish_list_to_json)
+    # atexit.register(save_finish_list_to_json)
     # atexit.register(save_fail_list_to_json)
-    signal.signal(signal.SIGINT, handle_sigint)
+    # signal.signal(signal.SIGINT, handle_sigint)
     
     if args.batch_size:
         BATCH_SIZE = args.batch_size
