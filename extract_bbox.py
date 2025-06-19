@@ -94,8 +94,13 @@ def process_dataset(dataset_path):
 
 
 if __name__ == "__main__":
-    dataset_home = '/pdata/oxe_lerobot'
-    all_datasets = [str(f) for f in Path(dataset_home).iterdir() if f.is_dir()]
+    # dataset_home = '/pdata/oxe_lerobot'
+    # all_datasets = [str(f) for f in Path(dataset_home).iterdir() if f.is_dir()]
+
+    # all_datasets = ['/pdata/oxe_lerobot/bc_z', '/pdata/oxe_lerobot/nyu_door_opening_surprising_effectiveness', '/pdata/oxe_lerobot/robo_set', '/pdata/oxe_lerobot/ucsd_pick_and_place_dataset_converted_externally_to_rlds', '/pdata/oxe_lerobot/stanford_hydra_dataset_converted_externally_to_rlds', '/pdata/oxe_lerobot/iamlab_cmu_pickup_insert_converted_externally_to_rlds', '/pdata/oxe_lerobot/io_ai_tech', '/pdata/oxe_lerobot/cmu_play_fusion', '/pdata/oxe_lerobot/roboturk', '/pdata/oxe_lerobot/fmb', '/pdata/oxe_lerobot/language_table']
+    all_datasets = [
+        '/pdata/oxe_lerobot/austin_buds_dataset_converted_externally_to_rlds'
+    ]
 
     for i, dataset_path in enumerate(all_datasets):
         # if dataset_path.endswith('bc_z'):

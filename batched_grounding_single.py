@@ -4,18 +4,14 @@ CUDA_VISIBLE_DEVICES=4 TOKENIZERS_PARALLELISM=true python batched_grounding.py \
     --output-home /pdata/oxe_lerobot_g \
     --batch_size 24
 
-source /fyh/.env/miniconda3/etc/profile.d/conda.sh
-conda activate vllm
-HF_DATASETS_CACHE="/fyh/.cache/huggingface_r7/datasets" \
-HF_HOME="fyh/.cache/huggingface_r7" \
+HF_DATASETS_CACHE="/fyh/.cache/huggingface/datasets" \
+HF_HOME="fyh/.cache/huggingface" \
 CUDA_VISIBLE_DEVICES=7 \
 TOKENIZERS_PARALLELISM=false \
-python batched_grounding.py \
-    --dataset-home /pdata/oxe_lerobot \
+python batched_grounding_single.py \
+    --dataset-path /pdata/oxe_lerobot/austin_buds_dataset_converted_externally_to_rlds \
     --inplace 1 \
-    --batch-size 1024 \
-    --world-size 8 \
-    --rank 7
+    --batch-size 1024
 """
 
 import os, sys, io, signal, time
@@ -26,7 +22,6 @@ import shutil
 import random
 import json
 import atexit
-from zlib import crc32
 from pathlib import Path
 from PIL import Image
 from tqdm import tqdm
@@ -44,8 +39,8 @@ SHOW_OBJECT_NAME = False
 
 USE_SUBTASK_CONDITIONING = True
 
-SAVE_INSPECTION_IMAGE = True
-RANDOM_SAMPLE_RATE = 0.0005 # ratio of images that will be saved for inspection
+# SAVE_INSPECTION_IMAGE = True
+# RANDOM_SAMPLE_RATE = 0.0005 # ratio of images that will be saved for inspection
 
 OVERWRITE_ORIGINAL_DATASET = False
 
@@ -57,8 +52,8 @@ BATCH_SIZE = 8
 ### --- global varibles --- ###
 from qwen_grounding_utils_v3 import load_list_from_jsonl, save_list_to_jsonl
 
-finished_parquet_list = load_list_from_jsonl("finished_parquets.jsonl")
-finished_parquet_list = [item["path"] for item in finished_parquet_list]
+# finished_parquet_list = load_list_from_jsonl("finished_parquets.jsonl")
+# finished_parquet_list = [item["path"] for item in finished_parquet_list]
 # def save_finish_list_to_json():
 #     global finished_parquet_list
 #     finished_parquets = []
@@ -66,17 +61,17 @@ finished_parquet_list = [item["path"] for item in finished_parquet_list]
 #         if isinstance(item, str):
 #             finished_parquets.append({"path": item})
 #     save_list_to_jsonl(finished_parquets, "finished_parquets.jsonl")
-def dump_record_to_finish_json(new_record, rank):
-    filename = f"resume/finished_parquets_{rank}.jsonl"
-    if not os.path.exists("resume"):
-        os.makedirs("resume")
-    if not os.path.exists(filename):
-        with open(filename, "w", encoding="utf-8") as f:
-            f.write(json.dumps(new_record, ensure_ascii=False) + "\n")
-    else:
-        # Append to the existing file
-        with open(filename, "a", encoding="utf-8") as f:
-            f.write(json.dumps(new_record, ensure_ascii=False) + "\n")
+# def dump_record_to_finish_json(new_record, rank):
+#     filename = f"resume/finished_parquets_{rank}.jsonl"
+#     if not os.path.exists("resume"):
+#         os.makedirs("resume")
+#     if not os.path.exists(filename):
+#         with open(filename, "w", encoding="utf-8") as f:
+#             f.write(json.dumps(new_record, ensure_ascii=False) + "\n")
+#     else:
+#         # Append to the existing file
+#         with open(filename, "a", encoding="utf-8") as f:
+#             f.write(json.dumps(new_record, ensure_ascii=False) + "\n")
 
 # failed_dataset_list = load_list_from_jsonl("failed_datasets.jsonl")
 # def save_fail_list_to_json():
@@ -94,8 +89,6 @@ inspection_image_id = 0
 os.makedirs("inspection_images", exist_ok=True)
 
 q_model, q_processor = None, None
-
-def getnum(s: str): return crc32(s.encode('utf-8')) % 192608
 
 ### --- process parquet --- ###
 def load_parquet(dataset_path):
@@ -155,9 +148,9 @@ def _save_and_clear_file_from_memory(
         f_to_save = pandas.DataFrame.from_records(updated_records)
         f_to_save.to_parquet(path_str, index=False)
 
-        dump_record_to_finish_json({
-            "path": path_str
-        }, rank=rank)
+        # dump_record_to_finish_json({
+        #     "path": path_str
+        # }, rank=rank)
         logging.info(f"Successfully saved {path_str}")
 
     except Exception as e:
@@ -225,18 +218,18 @@ def _process_and_apply_batch(
         record_to_update = in_memory_data[path][r_idx]
 
         # --- Save inspection image logic ---
-        if SAVE_INSPECTION_IMAGE and (random.random() < RANDOM_SAMPLE_RATE):
-            inspection_image_id += 1
-            parquet_info_str = f"{dataset_tag}_{Path(path).stem}_{meta['image_col_name'][-1]}".replace('/', '-').replace('\\', '-')
-            save_json_infos = {
-                'parquet_path': path,
-                'record_idx': r_idx,
-                'image_col_name': meta['image_col_name'],
-                'task_desc': meta['task_str_used'],
-                'json_response': json_response
-            }
-            with open(f"inspection_images/{inspection_image_id}_{parquet_info_str}.json", 'w') as json_file:
-                json.dump(save_json_infos, json_file, ensure_ascii=False, indent=4)
+        # if SAVE_INSPECTION_IMAGE and (random.random() < RANDOM_SAMPLE_RATE):
+        #     inspection_image_id += 1
+        #     parquet_info_str = f"{dataset_tag}_{Path(path).stem}_{meta['image_col_name'][-1]}".replace('/', '-').replace('\\', '-')
+        #     save_json_infos = {
+        #         'parquet_path': path,
+        #         'record_idx': r_idx,
+        #         'image_col_name': meta['image_col_name'],
+        #         'task_desc': meta['task_str_used'],
+        #         'json_response': json_response
+        #     }
+        #     with open(f"inspection_images/{inspection_image_id}_{parquet_info_str}.json", 'w') as json_file:
+        #         json.dump(save_json_infos, json_file, ensure_ascii=False, indent=4)
 
         # --- Update the record with bbox info ---
         if 'bbox' not in record_to_update:
@@ -272,7 +265,7 @@ def process_parquet(parquet_paths, tasks=None, bboxes_json_path: Path = None, da
     Processes a list of Parquet files, batching images across files for efficiency,
     and then writes the updated data back to each file.
     """
-    global finished_parquet_list
+    # global finished_parquet_list
     # global failed_dataset_list
 
     # Load shared bbox data if it exists
@@ -303,13 +296,9 @@ def process_parquet(parquet_paths, tasks=None, bboxes_json_path: Path = None, da
     logging.info("Phase 1: Collecting images and processing batches...")
     for parquet_path_str in tqdm(parquet_paths, desc="Collecting from Parquet Files", unit="file"):
         parquet_path = Path(parquet_path_str)
-        if str(parquet_path) in finished_parquet_list:
-            # logging.info(f"Skipping already processed file: {parquet_path}")
-            continue
-        
-        if getnum(parquet_path_str) % world_size != rank:
-            # logging.info(f"Skipping {parquet_path} for rank {rank} (path_num {getnum(parquet_path_str)}).")
-            continue
+        # if str(parquet_path) in finished_parquet_list:
+        #     # logging.info(f"Skipping already processed file: {parquet_path}")
+        #     continue
 
         try:
             # episode = load_dataset("parquet", data_files=str(parquet_path), split='train')
@@ -324,7 +313,7 @@ def process_parquet(parquet_paths, tasks=None, bboxes_json_path: Path = None, da
             continue # Skip to the next file
 
         if 'bbox' in features:
-            dump_record_to_finish_json({"path": str(parquet_path)}, rank=rank)
+            # dump_record_to_finish_json({"path": str(parquet_path)}, rank=rank)
             continue
 
         if 'sub_task_index' not in features:
@@ -569,11 +558,11 @@ if __name__ == "__main__":
 
     # finished_parquet_list.append(str(time.strftime('%Y-%m-%d %H:%M:%S',time.localtime(time.time()))))
     # failed_dataset_list.append({"time": str(time.strftime('%Y-%m-%d %H:%M:%S',time.localtime(time.time())))})
-    dump_record_to_finish_json({
-        "path": str(time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time()))),
-        "rank": args.rank,
-        "world_size": args.world_size
-    }, rank=args.rank)
+    # dump_record_to_finish_json({
+    #     "path": str(time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time()))),
+    #     "rank": args.rank,
+    #     "world_size": args.world_size
+    # }, rank=args.rank)
     
     if args.inplace == 1:
         OVERWRITE_ORIGINAL_DATASET = True

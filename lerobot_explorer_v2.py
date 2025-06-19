@@ -1,9 +1,9 @@
 """
 python lerobot_explorer_v2.py \
-    --dataset-path /pdata/oxe_lerobot/austin_buds_dataset_converted_externally_to_rlds
+    --dataset-path /pdata/oxe_lerobot/austin_sailor_dataset_converted_externally_to_rlds
 
 python lerobot_explorer_v2.py \
-    --parquet-file /pdata/oxe_lerobot/austin_buds_dataset_converted_externally_to_rlds/data/chunk-000/episode_000000.parquet
+    --parquet-file /pdata/oxe_lerobot/droid/data/chunk-000/episode_000000.parquet
 """
 
 import os
