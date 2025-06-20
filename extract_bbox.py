@@ -51,15 +51,21 @@ def process_parquet_file(parquet_path:str, all_bboxes):
             except Exception as e:
                 # logging.error(f"Error parsing bbox in {parquet_path} at index {index}: {e}")
                 pass
+        # if parquet_path == '/pdata/oxe_lerobot/nyu_door_opening_surprising_effectiveness/data/chunk-000/episode_000364.parquet':
+        #     breakpoint()
         
         if not parse_ok:
-            row['bbox_index'] = 0
+            df.at[index, 'bbox_index'] = 0
         else:
-            row['bbox_index'] = len(all_bboxes)
+            bbidx = len(all_bboxes)
+            df.at[index, 'bbox_index'] = bbidx
             all_bboxes.append({
-                'bbox_index': row['bbox_index'],
+                'bbox_index': bbidx,
                 'bbox': bbox_json
             })
+
+    # if parquet_path == '/pdata/oxe_lerobot/nyu_door_opening_surprising_effectiveness/data/chunk-000/episode_000364.parquet':
+    #     breakpoint()
     
     df.to_parquet(parquet_path)
     
@@ -97,10 +103,14 @@ if __name__ == "__main__":
     # dataset_home = '/pdata/oxe_lerobot'
     # all_datasets = [str(f) for f in Path(dataset_home).iterdir() if f.is_dir()]
 
-    # all_datasets = ['/pdata/oxe_lerobot/bc_z', '/pdata/oxe_lerobot/nyu_door_opening_surprising_effectiveness', '/pdata/oxe_lerobot/robo_set', '/pdata/oxe_lerobot/ucsd_pick_and_place_dataset_converted_externally_to_rlds', '/pdata/oxe_lerobot/stanford_hydra_dataset_converted_externally_to_rlds', '/pdata/oxe_lerobot/iamlab_cmu_pickup_insert_converted_externally_to_rlds', '/pdata/oxe_lerobot/io_ai_tech', '/pdata/oxe_lerobot/cmu_play_fusion', '/pdata/oxe_lerobot/roboturk', '/pdata/oxe_lerobot/fmb', '/pdata/oxe_lerobot/language_table']
-    all_datasets = [
-        '/pdata/oxe_lerobot/austin_buds_dataset_converted_externally_to_rlds'
+    all_datasets = ['/pdata/oxe_lerobot/austin_buds_dataset_converted_externally_to_rlds', '/pdata/oxe_lerobot/bc_z', '/pdata/oxe_lerobot/nyu_door_opening_surprising_effectiveness', '/pdata/oxe_lerobot/robo_set', '/pdata/oxe_lerobot/ucsd_pick_and_place_dataset_converted_externally_to_rlds', '/pdata/oxe_lerobot/stanford_hydra_dataset_converted_externally_to_rlds', '/pdata/oxe_lerobot/iamlab_cmu_pickup_insert_converted_externally_to_rlds', '/pdata/oxe_lerobot/io_ai_tech', '/pdata/oxe_lerobot/cmu_play_fusion', '/pdata/oxe_lerobot/roboturk', '/pdata/oxe_lerobot/fmb', '/pdata/oxe_lerobot/language_table', '/pdata/oxe_lerobot/austin_sailor_dataset_converted_externally_to_rlds', '/pdata/oxe_lerobot/bridge_data_v2', '/pdata/oxe_lerobot/berkeley_autolab_ur5', '/pdata/oxe_lerobot/bridge', '/pdata/oxe_lerobot/austin_sirius_dataset_converted_externally_to_rlds', '/pdata/oxe_lerobot/dobbe', '/pdata/oxe_lerobot/cmu_stretch', '/pdata/oxe_lerobot/utaustin_mutex', '/pdata/oxe_lerobot/fractal20220817_data', '/pdata/oxe_lerobot/jaco_play', '/pdata/oxe_lerobot/robo_net', '/pdata/oxe_lerobot/qut_dexterous_manpulation', '/pdata/oxe_lerobot/columbia_cairlab_pusht_real']
+    already_checked_datasets = [
+        '/pdata/oxe_lerobot/bc_z', '/pdata/oxe_lerobot/nyu_door_opening_surprising_effectiveness',
+        '/pdata/oxe_lerobot/austin_buds_dataset_converted_externally_to_rlds', '/pdata/oxe_lerobot/berkeley_fanuc_manipulation',
     ]
+    all_datasets = [d for d in all_datasets if d not in already_checked_datasets]
+
+    # all_datasets = ['/pdata/oxe_lerobot/nyu_door_opening_surprising_effectiveness']
 
     for i, dataset_path in enumerate(all_datasets):
         # if dataset_path.endswith('bc_z'):

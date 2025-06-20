@@ -503,7 +503,8 @@ def main(args):
         process_dataset(dataset_path)
     elif args.dataset_home:
         dataset_home = args.dataset_home
-        all_datasets = [str(f) for f in Path(dataset_home).iterdir() if f.is_dir()]
+        # all_datasets = [str(f) for f in Path(dataset_home).iterdir() if f.is_dir()]
+        all_datasets = ['/pdata/oxe_lerobot/austin_sailor_dataset_converted_externally_to_rlds', '/pdata/oxe_lerobot/bridge_data_v2', '/pdata/oxe_lerobot/berkeley_autolab_ur5', '/pdata/oxe_lerobot/bridge', '/pdata/oxe_lerobot/austin_sirius_dataset_converted_externally_to_rlds', '/pdata/oxe_lerobot/dobbe', '/pdata/oxe_lerobot/cmu_stretch', '/pdata/oxe_lerobot/utaustin_mutex', '/pdata/oxe_lerobot/fractal20220817_data', '/pdata/oxe_lerobot/jaco_play', '/pdata/oxe_lerobot/robo_net', '/pdata/oxe_lerobot/qut_dexterous_manpulation', '/pdata/oxe_lerobot/columbia_cairlab_pusht_real']
         logging.info(f"Found {len(all_datasets)} datasets in {dataset_home}.")
         for i, dataset_path in enumerate(all_datasets):
             logging.info(f"Processing {i+1} out of {len(all_datasets)}.")

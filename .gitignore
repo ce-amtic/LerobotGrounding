@@ -5,3 +5,5 @@ output_images_explorer/
 e.txt
 o.txt
 finished_parquets.jsonl
+resume/
+failed_parquet_files.pkl

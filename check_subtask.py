@@ -2,10 +2,10 @@ import json, sys, logging, random
 import pandas as pd
 from tqdm import tqdm
 from pathlib import Path
-
 from qwen_grounding_utils_v3 import load_list_from_jsonl
 
 dataset_info_list = [{'num': 50, 'path': '/pdata/oxe_lerobot/austin_buds_dataset_converted_externally_to_rlds'}, {'num': 51580, 'path': '/pdata/oxe_lerobot/bc_z'}, {'num': 415, 'path': '/pdata/oxe_lerobot/berkeley_fanuc_manipulation'}, {'num': 435, 'path': '/pdata/oxe_lerobot/nyu_door_opening_surprising_effectiveness'}, {'num': 18250, 'path': '/pdata/oxe_lerobot/robo_set'}, {'num': 1355, 'path': '/pdata/oxe_lerobot/ucsd_pick_and_place_dataset_converted_externally_to_rlds'}, {'num': 570, 'path': '/pdata/oxe_lerobot/stanford_hydra_dataset_converted_externally_to_rlds'}, {'num': 77960, 'path': '/pdata/oxe_lerobot/droid'}, {'num': 522, 'path': '/pdata/oxe_lerobot/iamlab_cmu_pickup_insert_converted_externally_to_rlds'}, {'num': 3847, 'path': '/pdata/oxe_lerobot/io_ai_tech'}, {'num': 576, 'path': '/pdata/oxe_lerobot/cmu_play_fusion'}, {'num': 1141, 'path': '/pdata/oxe_lerobot/roboturk'}, {'num': 8611, 'path': '/pdata/oxe_lerobot/fmb'}, {'num': 69757, 'path': '/pdata/oxe_lerobot/language_table'}, {'num': 480, 'path': '/pdata/oxe_lerobot/berkeley_mvp_converted_externally_to_rlds'}, {'num': 2460, 'path': '/pdata/oxe_lerobot/stanford_robocook_converted_externally_to_rlds'}, {'num': 107, 'path': '/pdata/oxe_lerobot/dlr_sara_grid_clamp_converted_externally_to_rlds'}, {'num': 402, 'path': '/pdata/oxe_lerobot/plex_robosuite'}, {'num': 100, 'path': '/pdata/oxe_lerobot/dlr_sara_pour_converted_externally_to_rlds'}, {'num': 9929, 'path': '/pdata/oxe_lerobot/vima_converted_externally_to_rlds'}, {'num': 240, 'path': '/pdata/oxe_lerobot/austin_sailor_dataset_converted_externally_to_rlds'}, {'num': 6484, 'path': '/pdata/oxe_lerobot/taco_play'}, {'num': 9109, 'path': '/pdata/oxe_lerobot/stanford_mask_vit_converted_externally_to_rlds'}, {'num': 1442, 'path': '/pdata/oxe_lerobot/berkeley_cable_routing'}, {'num': 53177, 'path': '/pdata/oxe_lerobot/bridge_data_v2'}, {'num': 896, 'path': '/pdata/oxe_lerobot/berkeley_autolab_ur5'}, {'num': 25460, 'path': '/pdata/oxe_lerobot/bridge'}, {'num': 559, 'path': '/pdata/oxe_lerobot/austin_sirius_dataset_converted_externally_to_rlds'}, {'num': 816606, 'path': '/pdata/oxe_lerobot/mt_opt_rlds'}, {'num': 5208, 'path': '/pdata/oxe_lerobot/dobbe'}, {'num': 745, 'path': '/pdata/oxe_lerobot/viola'}, {'num': 135, 'path': '/pdata/oxe_lerobot/cmu_stretch'}, {'num': 1500, 'path': '/pdata/oxe_lerobot/utaustin_mutex'}, {'num': 902, 'path': '/pdata/oxe_lerobot/toto'}, {'num': 87212, 'path': '/pdata/oxe_lerobot/fractal20220817_data'}, {'num': 976, 'path': '/pdata/oxe_lerobot/jaco_play'}, {'num': 82775, 'path': '/pdata/oxe_lerobot/robo_net'}, {'num': 580392, 'path': '/pdata/oxe_lerobot/kuka'}, {'num': 150, 'path': '/pdata/oxe_lerobot/ucsd_kitchen_dataset_converted_externally_to_rlds'}, {'num': 200, 'path': '/pdata/oxe_lerobot/qut_dexterous_manpulation'}, {'num': 365, 'path': '/pdata/oxe_lerobot/nyu_franka_play_dataset_converted_externally_to_rlds'}, {'num': 122, 'path': '/pdata/oxe_lerobot/columbia_cairlab_pusht_real'}, {'num': 13, 'path': '/pdata/oxe_lerobot/uiuc_d3field'}, {'num': 104, 'path': '/pdata/oxe_lerobot/dlr_edan_shared_control_converted_externally_to_rlds'}]
+dataset_size = {item['path']: item['num'] for item in dataset_info_list}
 
 def load_finished_list(world_size):
     finished_list = []
@@ -67,10 +67,9 @@ def check_dataset_finished(dataset_path, dataset_size, finished_list):
     finished_list = [x for x in finished_list if x.startswith(dataset_path)]
     finished_count = len(finished_list)
 
-    # finish_rate = finished_count / all_count
-    # print(f"Dataset: {dataset_path}, Finished Count: {finished_count}, Total Count: {all_count}, Finish Rate: {finish_rate:.2f}")
-    # return finish_rate >= 0.8
-    return finished_count != 0
+    finish_rate = finished_count / all_count
+    print(f"Dataset: {dataset_path}, Finished Count: {finished_count}, Total Count: {all_count}, Finish Rate: {finish_rate:.2f}")
+    return finish_rate >= 0.8
     # all_parquet_files = load_parquet(dataset_path)
     # all_count = len(all_parquet_files)
     # nope_count = 0
@@ -87,56 +86,34 @@ def check_dataset_finished(dataset_path, dataset_size, finished_list):
     # finish_rate = (all_count - nope_count) / all_count
     # return finish_rate >= 0.8
 
-def check_bbox_column(dataset_path):
-    all_parquet_files = load_parquet(dataset_path, max_files=10000)
-    all_parquet_files = random.sample(all_parquet_files, min(100, len(all_parquet_files)))
+def check_subtask_index(dataset_path):
+    # size_limit = int(0.5 * dataset_size[dataset_path])
+    all_parquet_files = load_parquet(dataset_path)
     for parquet_path_str in tqdm(all_parquet_files, desc="Checking Parquet Files", unit="file"):
         try:
             df = pd.read_parquet(parquet_path_str)
         except Exception as e:
             # logging.error(f"Error reading {parquet_path_str}: {e}")
             continue
-        if 'bbox' in df.columns:
+        if 'sub_task_index' in df.columns:
             # logging.error(f"Missing 'sub_task_index' in {parquet_path_str}")
             return True
     return False
 
 if __name__ == "__main__":
-    # dataset_home = '/pdata/oxe_lerobot'
-    # all_datasets = [str(f) for f in Path(dataset_home).iterdir() if f.is_dir()]
-    all_datasets = ['/pdata/oxe_lerobot/austin_buds_dataset_converted_externally_to_rlds', '/pdata/oxe_lerobot/bc_z', '/pdata/oxe_lerobot/berkeley_fanuc_manipulation', '/pdata/oxe_lerobot/nyu_door_opening_surprising_effectiveness', '/pdata/oxe_lerobot/robo_set', '/pdata/oxe_lerobot/ucsd_pick_and_place_dataset_converted_externally_to_rlds', '/pdata/oxe_lerobot/stanford_hydra_dataset_converted_externally_to_rlds', '/pdata/oxe_lerobot/iamlab_cmu_pickup_insert_converted_externally_to_rlds', '/pdata/oxe_lerobot/io_ai_tech', '/pdata/oxe_lerobot/cmu_play_fusion', '/pdata/oxe_lerobot/roboturk', '/pdata/oxe_lerobot/fmb', '/pdata/oxe_lerobot/language_table', '/pdata/oxe_lerobot/austin_sailor_dataset_converted_externally_to_rlds', '/pdata/oxe_lerobot/bridge_data_v2', '/pdata/oxe_lerobot/berkeley_autolab_ur5', '/pdata/oxe_lerobot/bridge', '/pdata/oxe_lerobot/austin_sirius_dataset_converted_externally_to_rlds', '/pdata/oxe_lerobot/dobbe', '/pdata/oxe_lerobot/cmu_stretch', '/pdata/oxe_lerobot/utaustin_mutex', '/pdata/oxe_lerobot/fractal20220817_data', '/pdata/oxe_lerobot/jaco_play', '/pdata/oxe_lerobot/robo_net', '/pdata/oxe_lerobot/qut_dexterous_manpulation', '/pdata/oxe_lerobot/columbia_cairlab_pusht_real']
+    dataset_home = '/pdata/oxe_lerobot'
+    all_datasets = [str(f) for f in Path(dataset_home).iterdir() if f.is_dir()]
 
-    dataset_size = {
-        item['path']: item['num'] for item in dataset_info_list
-    }
-
-    finished_datasets = []
-    failed_datasets = []
-    finished_list = load_finished_list(world_size=8)
-    for dataset_path in all_datasets:
-        print(f"Checking dataset: {dataset_path}")
-        if check_dataset_finished(dataset_path, dataset_size, finished_list):
-            print(f"passed: {dataset_path}")
-            finished_datasets.append(dataset_path)
-        else:
-            failed_datasets.append(dataset_path)
-
-    # if bbox_finished_datasets:
-    #     print(bbox_finished_datasets)
-    #     print(f"Total finished datasets: {len(bbox_finished_datasets)}")
-
-    bbox_failed_datasets = []
+    subtask_failed_datasets = []
     final_datasets = []
-    for dataset_path in finished_datasets:
-        if not check_bbox_column(dataset_path):
-            print(f"Negative bbox column: {dataset_path}")
-            bbox_failed_datasets.append(dataset_path)
+    for dataset_path in all_datasets:
+        if not check_subtask_index(dataset_path):
+            print(f"Negative sub_task_index: {dataset_path}")
+            subtask_failed_datasets.append(dataset_path)
             continue
         final_datasets.append(dataset_path)
     
-    if failed_datasets:
-        print(f"grounding not finished datasets: {len(failed_datasets)}\n{failed_datasets}")
-    if bbox_failed_datasets:
-        print(f"bbox column failed datasets: {len(bbox_failed_datasets)}\n{bbox_failed_datasets}")
+    if subtask_failed_datasets:
+        print(f"Subtask index failed datasets: {len(subtask_failed_datasets)}\n{subtask_failed_datasets}")
     if final_datasets:
-        print(f"Final datasets with bbox column: {len(final_datasets)}\n{final_datasets}")
+        print(f"Final datasets with sub_task_index: {len(final_datasets)}\n{final_datasets}")
