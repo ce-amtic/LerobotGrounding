@@ -1,4 +1,5 @@
 import json, sys, logging, random
+import numpy as np
 import pandas as pd
 from tqdm import tqdm
 from pathlib import Path
@@ -45,14 +46,16 @@ from check_bbox import load_parquet
 
 def process_parquet_file(parquet_path: str):
     try:
-        df = pd.read_parquet(parquet_path)
+        df = pd.read_parquet(parquet_path, columns=["bbox_index"])
+        check_sum = np.sum(df['bbox_index'] != 0)
+        # print(f"Checking {parquet_path}, bbox_index count: {check_sum}")
+        # print(check_sum)
+        if check_sum > 0:
+            return True
+        else:
+            return False
     except Exception as e:
         return False
-
-    if 'bbox_index' in df.columns:
-        return True
-    
-    return False
 
 def check_meta(dataset_path):
     try:
@@ -90,8 +93,14 @@ def check_column(dataset_path):
 if __name__ == "__main__":
     # dataset_home = '/pdata/oxe_lerobot'
     # all_datasets = [str(f) for f in Path(dataset_home).iterdir() if f.is_dir()]
-    all_datasets = ['/pdata/oxe_lerobot/austin_buds_dataset_converted_externally_to_rlds', '/pdata/oxe_lerobot/bc_z', '/pdata/oxe_lerobot/nyu_door_opening_surprising_effectiveness', '/pdata/oxe_lerobot/robo_set', '/pdata/oxe_lerobot/ucsd_pick_and_place_dataset_converted_externally_to_rlds', '/pdata/oxe_lerobot/stanford_hydra_dataset_converted_externally_to_rlds', '/pdata/oxe_lerobot/iamlab_cmu_pickup_insert_converted_externally_to_rlds', '/pdata/oxe_lerobot/io_ai_tech', '/pdata/oxe_lerobot/cmu_play_fusion', '/pdata/oxe_lerobot/roboturk', '/pdata/oxe_lerobot/fmb', '/pdata/oxe_lerobot/language_table', '/pdata/oxe_lerobot/austin_sailor_dataset_converted_externally_to_rlds', '/pdata/oxe_lerobot/bridge_data_v2', '/pdata/oxe_lerobot/berkeley_autolab_ur5', '/pdata/oxe_lerobot/bridge', '/pdata/oxe_lerobot/austin_sirius_dataset_converted_externally_to_rlds', '/pdata/oxe_lerobot/dobbe', '/pdata/oxe_lerobot/cmu_stretch', '/pdata/oxe_lerobot/utaustin_mutex', '/pdata/oxe_lerobot/fractal20220817_data', '/pdata/oxe_lerobot/jaco_play', '/pdata/oxe_lerobot/robo_net', '/pdata/oxe_lerobot/qut_dexterous_manpulation', '/pdata/oxe_lerobot/columbia_cairlab_pusht_real']
     
+    all_datasets = ['/pdata/oxe_lerobot/austin_buds_dataset_converted_externally_to_rlds', '/pdata/oxe_lerobot/berkeley_fanuc_manipulation', '/pdata/oxe_lerobot/bc_z', '/pdata/oxe_lerobot/nyu_door_opening_surprising_effectiveness', '/pdata/oxe_lerobot/robo_set', '/pdata/oxe_lerobot/ucsd_pick_and_place_dataset_converted_externally_to_rlds', '/pdata/oxe_lerobot/stanford_hydra_dataset_converted_externally_to_rlds', '/pdata/oxe_lerobot/iamlab_cmu_pickup_insert_converted_externally_to_rlds', '/pdata/oxe_lerobot/io_ai_tech', '/pdata/oxe_lerobot/cmu_play_fusion', '/pdata/oxe_lerobot/roboturk', '/pdata/oxe_lerobot/fmb', '/pdata/oxe_lerobot/language_table', '/pdata/oxe_lerobot/austin_sailor_dataset_converted_externally_to_rlds', '/pdata/oxe_lerobot/bridge_data_v2', '/pdata/oxe_lerobot/berkeley_autolab_ur5', '/pdata/oxe_lerobot/bridge', '/pdata/oxe_lerobot/austin_sirius_dataset_converted_externally_to_rlds', '/pdata/oxe_lerobot/dobbe', '/pdata/oxe_lerobot/cmu_stretch', '/pdata/oxe_lerobot/utaustin_mutex', '/pdata/oxe_lerobot/fractal20220817_data', '/pdata/oxe_lerobot/jaco_play', '/pdata/oxe_lerobot/robo_net', '/pdata/oxe_lerobot/qut_dexterous_manpulation', '/pdata/oxe_lerobot/columbia_cairlab_pusht_real']
+
+    # all_datasets = [
+    #     '/pdata/oxe_lerobot/austin_buds_dataset_converted_externally_to_rlds', 
+    #     '/pdata/oxe_lerobot/berkeley_fanuc_manipulation'
+    # ]
+
     ready_datasets = []
     for dataset_path in all_datasets:
         if check_meta(dataset_path) and check_column(dataset_path):

@@ -16,6 +16,17 @@ python batched_grounding.py \
     --batch-size 1024 \
     --world-size 8 \
     --rank 7
+
+HF_DATASETS_CACHE="/fyh/.cache/huggingface_r1/datasets" \
+HF_HOME="fyh/.cache/huggingface_r1" \
+CUDA_VISIBLE_DEVICES=4,5,6,7 \
+TOKENIZERS_PARALLELISM=false \
+python batched_grounding.py \
+    --dataset-path /pdata/oxe_lerobot/austin_buds_dataset_converted_externally_to_rlds \
+    --inplace 1 \
+    --batch-size 1024 \
+    --world-size 2 \
+    --rank 1
 """
 
 import os, sys, io, signal, time
@@ -50,7 +61,7 @@ RANDOM_SAMPLE_RATE = 0.0005 # ratio of images that will be saved for inspection
 OVERWRITE_ORIGINAL_DATASET = False
 
 # MODEL_NAME = "Qwen/Qwen2.5-VL-7B-Instruct"
-MODEL_NAME = "/fyh/.env/models/Qwen2.5-VL-7B-Instruct"
+MODEL_NAME = "/fyh/.env/models/Qwen2.5-VL-32B-Instruct"
 BATCH_SIZE = 8
 
 
@@ -503,8 +514,13 @@ def main(args):
         process_dataset(dataset_path)
     elif args.dataset_home:
         dataset_home = args.dataset_home
-        # all_datasets = [str(f) for f in Path(dataset_home).iterdir() if f.is_dir()]
-        all_datasets = ['/pdata/oxe_lerobot/austin_sailor_dataset_converted_externally_to_rlds', '/pdata/oxe_lerobot/bridge_data_v2', '/pdata/oxe_lerobot/berkeley_autolab_ur5', '/pdata/oxe_lerobot/bridge', '/pdata/oxe_lerobot/austin_sirius_dataset_converted_externally_to_rlds', '/pdata/oxe_lerobot/dobbe', '/pdata/oxe_lerobot/cmu_stretch', '/pdata/oxe_lerobot/utaustin_mutex', '/pdata/oxe_lerobot/fractal20220817_data', '/pdata/oxe_lerobot/jaco_play', '/pdata/oxe_lerobot/robo_net', '/pdata/oxe_lerobot/qut_dexterous_manpulation', '/pdata/oxe_lerobot/columbia_cairlab_pusht_real']
+        all_datasets = [str(f) for f in Path(dataset_home).iterdir() if f.is_dir()]
+        
+        # all_datasets = all_datasets = [
+        #     '/pdata/oxe_lerobot/austin_buds_dataset_converted_externally_to_rlds', 
+        #     '/pdata/oxe_lerobot/berkeley_fanuc_manipulation'
+        # ]
+        
         logging.info(f"Found {len(all_datasets)} datasets in {dataset_home}.")
         for i, dataset_path in enumerate(all_datasets):
             logging.info(f"Processing {i+1} out of {len(all_datasets)}.")
@@ -588,6 +604,6 @@ if __name__ == "__main__":
         BATCH_SIZE = args.batch_size
     logging.info(f"Batch size set to {BATCH_SIZE}.")
 
-    q_model, q_processor = setup_model(MODEL_NAME)
+    q_model, q_processor = setup_model(MODEL_NAME, tensor_parallel_size=4)
     
     main(args)
