@@ -8,7 +8,7 @@ TOKENIZERS_PARALLELISM=false \
 python batched_grounding_sp.py \
     --dataset-path /pdata/oxe_lerobot/austin_buds_dataset_converted_externally_to_rlds \
     --inplace 1 \
-    --batch-size 1024
+    --batch-size 2048
 """
 
 import os, sys, io, signal, time

@@ -81,8 +81,8 @@ def process_dataset(dataset_path):
     #     os.remove(json_dir / 'bbox.jsonl')
     # if (json_dir / 'bboxes.json').exists():
     #     os.remove(json_dir / 'bboxes.json')
-    # if (json_dir / 'bboxes.jsonl').exists():
-    #     os.remove(json_dir / 'bboxes.jsonl')
+    if (json_dir / 'bboxes.jsonl').exists():
+        os.remove(json_dir / 'bboxes.jsonl')
     # if (json_dir / 'bbox_rewrite.jsonl').exists():
     #     os.remove(json_dir / 'bbox_rewrite.jsonl')
 

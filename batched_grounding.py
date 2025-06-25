@@ -22,7 +22,7 @@ HF_HOME="fyh/.cache/huggingface_r1" \
 CUDA_VISIBLE_DEVICES=4,5,6,7 \
 TOKENIZERS_PARALLELISM=false \
 python batched_grounding.py \
-    --dataset-path /pdata/oxe_lerobot/austin_buds_dataset_converted_externally_to_rlds \
+    --dataset-path /pdata/sim_tabletop_tasks_lerobot_0617 \
     --inplace 1 \
     --batch-size 1024 \
     --world-size 2 \
@@ -335,7 +335,7 @@ def process_parquet(parquet_paths, tasks=None, bboxes_json_path: Path = None, da
             continue # Skip to the next file
 
         if 'bbox' in features:
-            dump_record_to_finish_json({"path": str(parquet_path)}, rank=rank)
+            # dump_record_to_finish_json({"path": str(parquet_path)}, rank=rank)
             continue
 
         if 'sub_task_index' not in features:
@@ -349,7 +349,7 @@ def process_parquet(parquet_paths, tasks=None, bboxes_json_path: Path = None, da
 
         # --- Identify image columns ---
         # image_columns_info = []
-        suspected_image_columns = [col for col in features if col == "observation.images.cam"]
+        suspected_image_columns = [col for col in features if col == "observation.images.cam_front"]
         # for col in suspected_image_columns:
         #     if isinstance(features[col], ImageHF):
         #         image_columns_info.append((col, ImageHF))
@@ -372,11 +372,8 @@ def process_parquet(parquet_paths, tasks=None, bboxes_json_path: Path = None, da
             task_str = None
             final_use_task_for_record = tasks_available
             if final_use_task_for_record:
-                r_task_index = record.get('task_index', None)
-                if 'task_index' not in features:
-                    if r_idx == 0: logging.warning(f"No task_index column in {parquet_path}. Disabling subtask conditioning for this file.")
-                    final_use_task_for_record = False
-                elif r_task_index is not None:
+                r_task_index = record.get('sub_task_index', None)
+                if r_task_index is not None:
                     try:
                         # task_row = tasks[tasks['task_index'] == r_task_index]
                         # task_str = task_row.iloc[0]['task'] if not task_row.empty else None
@@ -485,10 +482,10 @@ def process_dataset(dataset_path: str, world_size=1, rank=0):
         output_dataset_path = Path(dataset_path)
 
     # load tasks.jsonl
-    task_json_path = output_dataset_path / "meta" / "tasks.jsonl"
+    task_json_path = output_dataset_path / "meta" / "sub_tasks.jsonl"
     if task_json_path.exists():
         tasks_df = pandas.read_json(task_json_path, lines=True)
-        tasks = {int(row['task_index']): row['task'] for _, row in tasks_df.iterrows()}
+        tasks = {int(row['sub_task_index']): row['sub_task'] for _, row in tasks_df.iterrows()}
     else:
         tasks = None
 

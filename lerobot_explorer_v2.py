@@ -1,6 +1,6 @@
 """
 python lerobot_explorer_v2.py \
-    --dataset-path /pdata/oxe_lerobot/ucsd_kitchen_dataset_converted_externally_to_rlds
+    --dataset-path /pdata/sim_tabletop_tasks_lerobot_0617
 
 python lerobot_explorer_v2.py \
     --parquet-file /pdata/oxe_lerobot/nyu_door_opening_surprising_effectiveness/data/chunk-000/episode_000364.parquet
@@ -165,11 +165,11 @@ def explore_parquet_file(parquet_path_str: str, output_base_dir: Path):
             logging.info(f"    bbox: {record['bbox']}")
             logging.info(f"    bbox type: {type(record['bbox'])}")
         elif 'bbox' in features:
-            # logging.info(f"    bbox: (present but None/empty)")
-            continue
+            logging.info(f"    bbox: (present but None/empty)")
+            # continue
         else:
-            # logging.info(f"    bbox: (column not found in this record/features)")
-            continue
+            logging.info(f"    bbox: (column not found in this record/features)")
+            # continue
 
         # 2.5. Print 'bbox_index' if exists
         if 'bbox_index' in record:

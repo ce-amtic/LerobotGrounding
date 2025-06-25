@@ -3,7 +3,7 @@ python lerobot_explorer.py \
     --dataset-path /pdata/oxe_lerobot/austin_buds_dataset_converted_externally_to_rlds
 
 python lerobot_explorer.py \
-    --parquet-file /pdata/oxe_lerobot/ucsd_pick_and_place_dataset_converted_externally_to_rlds/data/chunk-000/episode_001111.parquet
+    --parquet-file /pdata/oxe_lerobot/berkeley_fanuc_manipulation/data/chunk-000/episode_000023.parquet
 """
 
 import os

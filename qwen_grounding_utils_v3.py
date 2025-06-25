@@ -54,11 +54,25 @@ def move_to_cpu(obj):
 def improved_json_parser(text_response: str):
     if not isinstance(text_response, str):
         raise TypeError("Input must be a string.")
+
+    def remove_json_comments(json_str: str) -> str:
+        """Remove // comments from a JSON-like string."""
+        lines = json_str.splitlines()
+        cleaned = []
+        for line in lines:
+            # Remove // comments, but skip URLs like http://
+            parts = re.split(r'(?<!http:)(?<!https:)//', line)
+            cleaned.append(parts[0].rstrip())
+        return '\n'.join(cleaned)
+
     text_response = text_response.strip()
+
     try:
         return json.loads(text_response)
     except json.JSONDecodeError:
         pass
+
+    # Try extracting JSON from fenced code blocks
     patterns = [
         r"```json\s*(.*?)\s*```",
         r"```\s*(.*?)\s*```"
@@ -67,12 +81,15 @@ def improved_json_parser(text_response: str):
         match = re.search(pattern, text_response, re.DOTALL)
         if match:
             potential_json = match.group(1).strip()
-            if (potential_json.startswith('{') and potential_json.endswith('}')) or \
-               (potential_json.startswith('[') and potential_json.endswith(']')):
+            cleaned_json = remove_json_comments(potential_json)
+            if (cleaned_json.startswith('{') and cleaned_json.endswith('}')) or \
+               (cleaned_json.startswith('[') and cleaned_json.endswith(']')):
                 try:
-                    return json.loads(potential_json)
+                    return json.loads(cleaned_json)
                 except json.JSONDecodeError:
                     pass
+
+    # Fallback: extract JSON-like content from anywhere in the string
     first_bracket_idx = text_response.find('[')
     first_curly_idx = text_response.find('{')
     start_idx = -1
@@ -87,11 +104,13 @@ def improved_json_parser(text_response: str):
         end_idx = text_response.rfind(expected_end_char)
         if end_idx > start_idx:
             potential_json = text_response[start_idx : end_idx + 1]
+            cleaned_json = remove_json_comments(potential_json)
             try:
-                return json.loads(potential_json)
+                return json.loads(cleaned_json)
             except json.JSONDecodeError:
                 pass
-    raise ValueError(f"Could not extract valid JSON from the input string: '{text_response[:100]}...'")
+
+    raise ValueError("Could not extract valid JSON from the input string")
 
 def check_normalized(json_response):
     for obj in json_response:
@@ -362,13 +381,13 @@ def grounding_pipeline_batched(
             question = (
                 f"This image shows a robotic arm performing the task: {task_desc}.\n"
                 "Identify and box all task-relevant objects in the image. Label each with its name. output its bbox coordinates using JSON format.\n"
-                "output each object only once."
+                "output each object only once. only output json, no other text."
             )
         else:
             question = (
                 "This is a picture of using a robotic arm to complete a specific task.\n"
                 "Identify and box all task-relevant objects in the image. Label each with its name. output its bbox coordinates using JSON format.\n"
-                "output each object only once."
+                "output each object only once. only output json, no other text."
             )
         questions.append(question)
 
